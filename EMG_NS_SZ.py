@@ -7,8 +7,8 @@
 # ---------------------------------------------
 
 import numpy as np
-from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
+from types import SimpleNamespace
 
 # === USER-DEFINED PARAMETERS ===
 xi = 2.5       # Non-minimal coupling
@@ -99,14 +99,39 @@ def initial_conditions(p_c, sigma_c):
     dsigma0 = 0.0
     return [m0, Phi0, sigma_c, dsigma0, p_c]
 
+# === 4th Order Runge-Kutta Integrator ===
+def runge_kutta_4(ode_func, r_span, y0, r_points):
+    r0, r_end = r_span
+    r_eval = np.linspace(r0, r_end, r_points)
+    y = np.zeros((len(y0), r_points))
+    y[:, 0] = y0
+
+    for i in range(r_points - 1):
+        r = r_eval[i]
+        h = r_eval[i + 1] - r
+        y_i = y[:, i]
+
+        k1 = np.array(ode_func(r, y_i))
+        k2 = np.array(ode_func(r + 0.5 * h, y_i + 0.5 * h * k1))
+        k3 = np.array(ode_func(r + 0.5 * h, y_i + 0.5 * h * k2))
+        k4 = np.array(ode_func(r + h, y_i + h * k3))
+
+        y[:, i + 1] = y_i + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        # Stop integration once pressure becomes non-positive
+        if y[:, i + 1][-1] <= 0:
+            r_eval = r_eval[: i + 2]
+            y = y[:, : i + 2]
+            break
+
+    return SimpleNamespace(t=r_eval, y=y)
+
 # === Integrator Wrapper ===
 def integrate_star(p_c, sigma_c, r_max=30.0, r_points=1000):
     r_span = (1e-6, r_max)
-    r_eval = np.linspace(*r_span, r_points)
     y0 = initial_conditions(p_c, sigma_c)
 
-    sol = solve_ivp(tov_system, r_span, y0, t_eval=r_eval,
-                    method='RK45', rtol=1e-6, atol=1e-9)
+    sol = runge_kutta_4(tov_system, r_span, y0, r_points)
     return sol
 
 # === Scalarization Scanner ===
