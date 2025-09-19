@@ -14,7 +14,7 @@ p_eqState   = p_SLy4
 rho_eqState = rho_SLy4
 
 rho0    = rho0_lightS
-xi_val  = 10
+xi_val = 10
 lmbda_val = lmbda_EMG
 frac_pc = 1e-10
 
@@ -88,16 +88,17 @@ if __name__ == "__main__":
         r0=r0,
         r_max=r_max,
         xi=xi_val,
-        bracket=(-1e-7*M, M),    # make sure units match σ0
+        bracket=(1e-7 * M, M),
         rho0=rho0,
         lmbda=lmbda_val,
-        abs_threshold=1e-10*M,
+        abs_threshold=1e-10 * M,
         tol_relative=1e-2,
-        n_seeds=41,
+        sigma0_min_abs=1e-8 * M,
+        n_seeds=50,
         xtol=1e-12,
         maxfev=400,
         idx_sigma=2,
-        merge_tol=1e-8*M
+        merge_tol=1e-8 * M,
     )
 
     if not s0_list:
@@ -156,7 +157,7 @@ if __name__ == "__main__":
             return M_kg
 
         ADM_mass = adm_mass_from_solution(sol_bnd, k_tail=15)
-        R_log = R_star_m if R_star_m is not None else r_max  # simple fallback
+        R_log = R_star_m  # FIXME:
         if lmbda_val != 0.0:
             scalar_charge = -r_max**2 * np.sqrt(np.log(r_max/max(R_log, 1.0))) * sol_bnd.y[3][-1]/M * (c*c) / G_N
         else:
