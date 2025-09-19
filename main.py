@@ -82,23 +82,21 @@ if __name__ == "__main__":
 
     # --- 1) Find ALL σ0 roots via fsolve (absolute-first, then relative) ---
     s0_list = shoot_sigma0(
+        bracket=(-M, M),
         integrate_fn=integrate_star,
         p_eqState=p_eqState,
         rho_eqState=rho_eqState,
+        eps0=rho0 * c * c,
         r0=r0,
         r_max=r_max,
         xi=xi_val,
-        bracket=(1e-7 * M, M),
-        rho0=rho0,
         lmbda=lmbda_val,
-        abs_threshold=1e-10 * M,
-        tol_relative=1e-2,
-        sigma0_min_abs=1e-8 * M,
-        n_seeds=50,
-        xtol=1e-12,
-        maxfev=400,
-        idx_sigma=2,
-        merge_tol=1e-8 * M,
+        target=0.0,
+        abs_tol=1e-10 * M,
+        rel_tol=1e-2,
+        max_iter=200,
+        scan_range=(1e-7 * M, 1e-1 * M),
+        n_samples=401,
     )
 
     if not s0_list:
