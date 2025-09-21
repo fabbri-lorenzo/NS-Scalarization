@@ -7,17 +7,25 @@ from Utils.shooting import shoot_sigma0
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics import printResults_multi, custom_print
 
-from tqdm import tqdm
+import time
 
 # ---------- config ----------
 p_eqState   = p_SLy4
 rho_eqState = rho_SLy4
 
-rho0    = rho0_lightS
-xi_val = 10
+rho0 = rho0_lightS
+
+star_weight = ""
+if rho0 == rho0_lightS:
+    star_weight = "L"  # Light star
+elif rho0 == rho0_lightS:
+    star_weight = "H"  # Heavy star
+
+xi_val = 50
 lmbda_val = lmbda_EMG
 frac_pc = 1e-10
 
+t0 = time.perf_counter()
 custom_print(f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ρ0 = {rho0:.1e}", style="bold")
 
 # ---------- helpers ----------
@@ -82,21 +90,22 @@ if __name__ == "__main__":
 
     # --- 1) Find ALL σ0 roots via fsolve (absolute-first, then relative) ---
     s0_list = shoot_sigma0(
-        bracket=(-M, M),
         integrate_fn=integrate_star,
         p_eqState=p_eqState,
         rho_eqState=rho_eqState,
-        eps0=rho0 * c * c,
         r0=r0,
         r_max=r_max,
         xi=xi_val,
+        bracket=(1e-8 * M, 0.5 * M),
+        rho0=rho0,
         lmbda=lmbda_val,
-        target=0.0,
-        abs_tol=1e-10 * M,
-        rel_tol=1e-2,
-        max_iter=200,
-        scan_range=(1e-7 * M, 1e-1 * M),
-        n_samples=401,
+        abs_threshold=1e-10 * M,
+        tol_relative=1e-2,
+        sigma0_min_abs=1e-8 * M,
+        n_seeds=45,
+        xtol=1e-12,
+        idx_sigma=2,
+        merge_tol=1e-8 * M,
     )
 
     if not s0_list:
@@ -106,7 +115,7 @@ if __name__ == "__main__":
     per_mode = {}     # n -> list of dicts with entries
     all_entries = []  # for plotting
 
-    for s0 in tqdm(s0_list, desc="\nIntegrating σ0 candidates to 2R", unit="sol"):
+    for s0 in s0_list:
         sol, mu2_log, R_star_m = integrate_star(
             s0, p_eqState, rho_eqState, r0, r_max, stop_at_2r=True, record_mu2=True
         )
@@ -134,7 +143,7 @@ if __name__ == "__main__":
 
     # --- 4) Final integrate (again) for selected modes for plotting + diagnostics ---
     plot_entries = []
-    for n, s0 in tqdm(list(sigma0_by_mode.items()), desc="\nFinal integrations", unit="mode"):
+    for n, s0 in list(sigma0_by_mode.items()):
         sol, mu2_log, R_star_m = integrate_star(
             s0, p_eqState, rho_eqState, r0, r_max, stop_at_2r=True, record_mu2=True
         )
@@ -174,5 +183,8 @@ if __name__ == "__main__":
             "mu2": mu2
         })
 
+    t_tot = time.perf_counter() - t0
+    print(f"Elapsed time: {t_tot:.2f} s")
+
     # --- 5) Plots
-    printResults_multi(plot_entries, xi_val)
+    printResults_multi(plot_entries, xi_val, star_weight)

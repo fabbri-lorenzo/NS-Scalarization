@@ -7,13 +7,14 @@ from Utils.params import c, G_N, M, SM
 R_star_color = 'c'
 dpi_val = 600
 
-def printResults_multi(entries, xi):
+
+def printResults_multi(entries, xi, star_weight):
     """
     entries: list of dicts with keys
       ['label','sol','r_star','r_mu','mu2']
     Makes one figure per quantity, overlaying curves for each entry.
     """
-    savepath = f"Results/ResultsEMG_xi={xi:.0f}/"
+    savepath = f"Results/Results_{star_weight}_xi={xi:.0f}/"
     os.makedirs(savepath, exist_ok=True)
 
     # style cycle (extend if you add more modes)
@@ -23,7 +24,7 @@ def printResults_multi(entries, xi):
         dict(linestyle='-',  linewidth=1.6),
         dict(linestyle='-',   linewidth=1.6),
     ]
-    
+
     # --- Pressure profile ---
     plt.figure()
     for i, e in enumerate(entries):
@@ -46,8 +47,8 @@ def printResults_multi(entries, xi):
     plt.show()
 
     #    # --- Mass and metric ---
-    #plt.figure()
-    #for i, e in enumerate(entries):
+    # plt.figure()
+    # for i, e in enumerate(entries):
     #    sol = e["sol"]; sty = styles[i % len(styles)]
     #    r_plot = np.linspace(sol.t[0], sol.t[-1], 4000)
     #    if hasattr(sol, "sol") and callable(sol.sol):
@@ -57,14 +58,14 @@ def printResults_multi(entries, xi):
     #    else:
     #        m_plot   = np.interp(r_plot, sol.t, sol.y[1])
     #        phi_plot = np.interp(r_plot, sol.t, sol.y[2])
-#
+    #
     #    Phi_norm_plot = phi_plot - phi_plot[-1]
     #    plt.plot(r_plot/1e3, m_plot*(c*c/G_N)/SM, label=f"m(r) [{e['label']}]", **sty)
-#
-    #for e in entries:
+    #
+    # for e in entries:
     #    plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
-#
-    #for i, e in enumerate(entries):
+    #
+    # for i, e in enumerate(entries):
     #    sol = e["sol"]; sty = styles[i % len(styles)].copy(); sty.update(alpha=0.6)
     #    r_plot = np.linspace(sol.t[0], sol.t[-1], 4000)
     #    if hasattr(sol, "sol") and callable(sol.sol):
@@ -73,15 +74,14 @@ def printResults_multi(entries, xi):
     #        phi_plot = np.interp(r_plot, sol.t, sol.y[2])
     #    Phi_norm_plot = phi_plot - phi_plot[-1]
     #    plt.plot(r_plot/1e3, np.exp(Phi_norm_plot), label=f"e^(2Φ) [{e['label']}]", **sty)
-    #    
-    #plt.xlabel('r (Km)')
-    #plt.legend(); plt.grid(True); plt.title('Mass & Metric profiles EMG')
-    #plt.tight_layout()
-    #plt.savefig(savepath + "mass_metric.png", dpi=dpi_val)
-    #plt.show()    
+    #
+    # plt.xlabel('r (Km)')
+    # plt.legend(); plt.grid(True); plt.title('Mass & Metric profiles EMG')
+    # plt.tight_layout()
+    # plt.savefig(savepath + "mass_metric.png", dpi=dpi_val)
+    # plt.show()
 
-
-        # --- Effective mass squared profile (uniform resample of logged points) ---
+    # --- Effective mass squared profile (uniform resample of logged points) ---
     plt.figure()
     for i, e in enumerate(entries):
         r_mu, mu2 = e["r_mu"], e["mu2"]
@@ -120,7 +120,6 @@ def printResults_multi(entries, xi):
     plt.savefig(savepath + "mu2.png", dpi=dpi_val, bbox_inches="tight")
     plt.show()
 
-
     # --- Scalar field σ(r) ---
     plt.figure()
     for i, e in enumerate(entries):
@@ -141,8 +140,8 @@ def printResults_multi(entries, xi):
     plt.show()
 
     ## --- Normalized scalar field ---
-    #plt.figure()
-    #for i, e in enumerate(entries):
+    # plt.figure()
+    # for i, e in enumerate(entries):
     #    sol = e["sol"]; sty = styles[i % len(styles)]
     #    sigma0 = sol.y[2,0]
     #    r_plot = np.linspace(sol.t[0], sol.t[-1], 4000)
@@ -150,34 +149,36 @@ def printResults_multi(entries, xi):
     #        sigma_plot = sol.sol(r_plot)[3]
     #    else:
     #        sigma_plot = np.interp(r_plot, sol.t, sol.y[2])
-    #        
+    #
     #    plt.plot(r_plot/1e3, sigma_plot/sigma0, label=f"σ(r)/σ₀ [{e['label']}]", **sty)
     #
     ## vertical lines at R_star
-    #for e in entries:
+    # for e in entries:
     #    plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
     #
     ## annotate sigma0 values in the corner of the plot
-    #text_lines = []
-    #for i, e in enumerate(entries):
+    # text_lines = []
+    # for i, e in enumerate(entries):
     #    sigma0 = e["sol"].y[3,0]/M # in Plank masses
     #    text_lines.append(f"{e['label']}: σ₀ = {sigma0:.2e}")
+
+
 #
-    #plt.text(
-    #    0.98, 0.02, "\n".join(text_lines),
-    #    transform=plt.gca().transAxes,
-    #    va="bottom", ha="right",
-    #    fontsize=9,
-    #    bbox=dict(boxstyle="round", facecolor="white", alpha=1.0)
-    #)
+# plt.text(
+#    0.98, 0.02, "\n".join(text_lines),
+#    transform=plt.gca().transAxes,
+#    va="bottom", ha="right",
+#    fontsize=9,
+#    bbox=dict(boxstyle="round", facecolor="white", alpha=1.0)
+# )
 #
-    #
-    #plt.xlabel('r (Km)')
-    #plt.legend(); plt.grid(True)
-    #plt.title('Scalar field σ(r) for EMG')
-    #plt.tight_layout()
-    #plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)
-    #plt.show()
+#
+# plt.xlabel('r (Km)')
+# plt.legend(); plt.grid(True)
+# plt.title('Scalar field σ(r) for EMG')
+# plt.tight_layout()
+# plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)
+# plt.show()
 
 # --- Colored printing utility ---
 from colorama import Fore, Style, init

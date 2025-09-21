@@ -1,12 +1,10 @@
-import math
 import numpy as np
-from itertools import pairwise
-from Utils.TOV_EMG import psi2_center
+from scipy.optimize import fsolve
+
+from Utils.TOV_EMG import _sigma2_psi2
+from Utils.params import c, M, lmbda_EMG as LAMBDA_DEFAULT
 
 
-# -------------------------
-# Endpoint extraction / mismatch
-# -------------------------
 def _sigma_rmax(s0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sigma=2):
     """
     Integrate the system with central scalar amplitude ``s0`` and return the value
@@ -21,259 +19,163 @@ def _sigma_rmax(s0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sig
     return float(sol.y[idx_sigma, -1])
 
 
-# -------------------------
-# Residual wrapper
-# -------------------------
-def residual(sigma0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, target=0.0):
+def _residual(s0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sigma=2):
+    """Wrapper around ``_sigma_rmax`` that guards against exceptions and
+    non‑finite results.  Returns a large value on failure.
     """
-    Map sigma0 -> mismatch f(sigma0). Forwards all args to your integrator.
-    """
-    s0 = _sigma_rmax(sigma0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi)
-    f = s0 - target
-    # Guard against NaNs/inf from bad integrations
-    if not math.isfinite(f):
-        return float("inf")
-
-    return f
-
-
-# -------------------------
-# Helpers for non‑monotonic f(sigma0): scan, bracket, solve
-# -------------------------
-def _safe_residual(s0, *args, **kwargs):
     try:
-        r = residual(s0, *args, **kwargs)
-        return r if math.isfinite(r) else float("inf")
-    except Exception:
-        return float("inf")
-
-
-def scan_brackets(s0_min, s0_max, n_samples, *resid_args, **resid_kwargs):
-    """
-    Coarse sweep over sigma0 to find sign-change brackets and 'near-zero' dips.
-    Returns (brackets, dips).
-    """
-    grid = [s0_min + i * (s0_max - s0_min) / (n_samples - 1) for i in range(n_samples)]
-    vals = [_safe_residual(s0, *resid_args, **resid_kwargs) for s0 in grid]
-
-    brackets = []
-    for (x0, x1), (f0, f1) in pairwise(zip(grid, vals)):
-        if math.isfinite(f0) and math.isfinite(f1) and f0 * f1 < 0.0:
-            brackets.append((x0, x1))
-
-    # near-zero dips (handles tangential roots where sign doesn't flip)
-    dips = []
-
-    vals_finite = [v for v in vals if math.isfinite(v)]
-    if not vals_finite:
-        raise RuntimeError(
-            "scan_brackets: no finite residuals. Check ODE setup, make_tov_system "
-            "signature/args, EOS domain (p>0), r0, and that integrate_sigma0 returns sol.success=True."
+        val = _sigma_rmax(
+            s0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sigma
         )
-    thr = max(1e-6, 1e-3 * max(1.0, max(abs(v) for v in vals_finite)))
-
-    for i in range(1, n_samples - 1):
-        f = vals[i]
-        if math.isfinite(f) and abs(f) < thr and f <= vals[i - 1] and f <= vals[i + 1]:
-            dips.append(grid[i])
-
-    return brackets, dips
+        if not np.isfinite(val):
+            return 1e300
+        return val
+    except Exception:
+        return 1e300
 
 
-def refine_near_zero(s0, width, *resid_args, **resid_kwargs):
-    left, right = s0 - width, s0 + width
-    fL = _safe_residual(left, *resid_args, **resid_kwargs)
-    fR = _safe_residual(right, *resid_args, **resid_kwargs)
-    return (
-        (left, right)
-        if math.isfinite(fL) and math.isfinite(fR) and fL * fR < 0.0
-        else None
-    )
+def _unique_sorted(vals, tol=1e-8):
+    """Given a list of floats, return a sorted list with near‑duplicates merged."""
+    if not vals:
+        return []
+    vals = sorted(vals)
+    out = [vals[0]]
+    for v in vals[1:]:
+        if abs(v - out[-1]) > tol * max(1.0, abs(v), abs(out[-1])):
+            out.append(v)
+    return out
 
 
-# -------------------------
-# Robust hybrid root finder inside a bracket
-# -------------------------
+def _x_to_s(x, a, b):
+    """Map x∈ℝ to s∈(a,b) using tanh.  This avoids exponent overflow."""
+    t = np.tanh(x)
+    return 0.5 * (a + b) + 0.5 * (b - a) * t
+
+
+def _s_to_x(s, a, b):
+    """Inverse map s∈(a,b) to x∈ℝ via atanh; clip the argument to avoid ±1."""
+    t = (2.0 * (s - 0.5 * (a + b))) / (b - a)
+    t = np.clip(t, -1.0 + 1e-15, 1.0 - 1e-15)
+    return np.arctanh(t)
 
 
 def shoot_sigma0(
-    bracket=None,
-    integrate_fn=None,
-    p_eqState=None,
-    rho_eqState=None,
-    eps0=None,
-    r0=None,
-    r_max=None,
-    xi=None,
-    lmbda=None,
-    target=0.0,
-    abs_tol=1e-8,
-    rel_tol=1e-2,
-    max_iter=100,
-    use_secant_first=True,
-    scan_if_needed=True,
-    scan_range=(-1e-2, 1e-2),
-    n_samples=401,
-    return_all=False,
+    integrate_fn,
+    p_eqState,
+    rho_eqState,
+    r0,
+    r_max,
+    xi,
+    bracket,  # (a, b) in SAME UNITS as σ0
+    rho0,  # for Ψ2 check
+    lmbda=LAMBDA_DEFAULT,
+    abs_threshold=1e-10,
+    tol_relative=1e-2,
+    n_seeds=41,
+    sigma0_min_abs=0.0,
+    xtol=1e-12,
+    idx_sigma=2,
+    merge_tol=1e-8,
 ):
     """
-    Robust root finder for non‑monotonic residuals.
-    - If 'bracket' is valid and straddles a root: secant-in-bracket + bisection fallback.
-    - Else (or bracket=None) and scan_if_needed=True: coarse scan via scan_brackets/dips,
-      then solve each bracket and pick the best root.
-    Returns:
-      (sigma0_root, f_val, iters) by default; if return_all=True also returns a list of
-      per-root dicts like find_all_roots().
+    Shoot for central scalar amplitudes ``σ0`` such that the scalar field at
+    ``r_max`` vanishes.  A list of acceptable roots is returned.  Roots are
+    accepted if their residual is below ``abs_threshold``.  If none meet that
+    criterion, a relaxed relative threshold ``tol_relative`` is used instead.
+    Only roots for which ``psi2_center`` is positive are returned.
     """
+    a, b = map(float, bracket)
+    if not (np.isfinite(a) and np.isfinite(b) and a < b):
+        raise ValueError("Invalid bracket")
 
-    def f(s0):
-        return residual(
-            s0,
-            integrate_fn,
-            p_eqState,
-            rho_eqState,
-            r0,
-            r_max,
-            xi,
-            target=target,
-        )
+    p0 = float(p_eqState(rho0))
+    eps0 = float(rho0 * c * c)
 
-    def solve_bracket(a, b):
-        fa, fb = f(a), f(b)
-        if not (math.isfinite(fa) and math.isfinite(fb)):
-            raise RuntimeError("Non-finite residual at bracket ends.")
-        if fa == 0.0:
-            return a, 0.0, 0
-        if fb == 0.0:
-            return b, 0.0, 0
-        if fa * fb > 0.0:
-            raise ValueError("Bracket does not straddle a root (f(a)*f(b)>0).")
-
-        A, B, fA, fB = a, b, fa, fb
-        for it in range(1, max_iter + 1):
-            # Secant step confined to [A,B]
-            if use_secant_first and (fB - fA) != 0.0:
-                s = B - fB * (B - A) / (fB - fA)
-                if not (min(A, B) < s < max(A, B)) or not math.isfinite(s):
-                    s = 0.5 * (A + B)
-            else:
-                s = 0.5 * (A + B)
-
-            fs = f(s)
-            if not math.isfinite(fs):
-                s = 0.5 * (A + B)
-                fs = f(s)
-
-            if abs(fs) <= abs_tol:
-                return s, fs, it
-            if abs(B - A) <= abs_tol * max(1.0, abs(s)):
-                return s, fs, it
-
-            if fA * fs < 0.0:
-                B, fB = s, fs
-            else:
-                A, fA = s, fs
-
-        s_mid = 0.5 * (A + B)
-        return s_mid, f(s_mid), max_iter
-
-    # Path 1: Try provided bracket (if any) first
-    if bracket is not None:
-        a, b = bracket
-        try:
-            root, fval, iters = solve_bracket(a, b)
-            return (root, fval, iters)
-        except Exception:
-            if not scan_if_needed:
-                raise
-
-    # Path 2: Scan + solve all brackets (handles non‑monotonicity / multiple roots)
-    s0_min, s0_max = scan_range
-    resid_kwargs = dict(
-        integrate_fn=integrate_fn,
-        p_eqState=p_eqState,
-        rho_eqState=rho_eqState,
-        r0=r0,
-        r_max=r_max,
-        xi=xi,
-        target=target,
-    )
-    brackets, dips = scan_brackets(
-        s0_min,
-        s0_max,
-        n_samples,
-        integrate_fn=integrate_fn,
-        p_eqState=p_eqState,
-        rho_eqState=rho_eqState,
-        xi=xi,
-        **resid_kwargs
-    )
-
-    # Upgrade dips into brackets where possible
-    width = 0.1 * (s0_max - s0_min) / n_samples
-    for s0 in dips:
-        b = refine_near_zero(
-            s0,
-            width,
-            integrate_fn=integrate_fn,
-            p_eqState=p_eqState,
-            rho_eqState=rho_eqState,
-            xi=xi,
-            **resid_kwargs
-        )
-        if b is not None:
-            brackets.append(b)
-
-    # Deduplicate/sort
-    uniq = []
-    for a, b in sorted((min(a, b), max(a, b)) for a, b in brackets):
-        if not uniq or (a - uniq[-1][1]) > 1e-12 * (1 + abs(a)):
-            uniq.append((a, b))
-
-    roots = []
-    for a, b in uniq:
-        try:
-            r, fv, it = solve_bracket(a, b)
-            if math.isfinite(r) and math.isfinite(fv):
-                roots.append(dict(sigma0=r, f=fv, iters=it))
-        except Exception:
-            continue
-
-    # Also accept exact near-zeros we didn’t bracket (rare)
-    for s0 in dips:
-        try:
-            fv = residual(
-                s0,
+    # uniform seeds in s‐space for scaling and fallback
+    S_uniform = np.linspace(a, b, int(n_seeds))
+    F_uniform = []
+    for s0 in S_uniform:
+        F_uniform.append(
+            _residual(
+                float(s0),
                 integrate_fn,
                 p_eqState,
                 rho_eqState,
                 r0,
                 r_max,
                 xi,
-                target=target,
+                idx_sigma,
             )
-            if math.isfinite(fv) and abs(fv) <= abs_tol:
-                roots.append(dict(sigma0=s0, f=fv, iters=0))
-        except Exception:
-            pass
+        )
+    F_uniform = np.array(F_uniform, float)
 
-    if not roots:
-        raise RuntimeError(
-            "No roots found in scan range; widen scan_range or n_samples."
+    # choose a scale for the root finder based on median finite residual
+    finite = np.isfinite(F_uniform)
+    if np.any(finite):
+        sigma_scale = max(1.0, np.median(np.abs(F_uniform[finite])))
+    else:
+        sigma_scale = max(1.0, abs(b - a))
+
+    def f_arr_x(x_vec):
+        s = _x_to_s(float(x_vec[0]), a, b)
+        return np.array(
+            [
+                _residual(
+                    s, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sigma
+                )
+                / sigma_scale
+            ]
         )
 
-    # Pick the “best” root = min |f| (tie-breaker: smallest |sigma0|)
-    best = min(roots, key=lambda d: (abs(d["f"]), abs(d["sigma0"])))
-    return (
-        (best["sigma0"], best["f"], best["iters"])
-        if not return_all
-        else ((best["sigma0"], best["f"], best["iters"]), roots)
-    )
+    roots = []
+    # Use fsolve on a set of seeds to locate roots.
+    k_extra = min(8, len(S_uniform) // 4)
+    idx_k = np.argsort(np.where(finite, np.abs(F_uniform), np.inf))[:k_extra]
+    S_seeds = np.unique(np.concatenate([S_uniform, S_uniform[idx_k]]))
+    roots = []
+    for s0 in S_seeds:
+        try:
+            x0 = _s_to_x(float(s0), a, b)
+            x_star, info, ier, _ = fsolve(f_arr_x, x0=[x0], full_output=True, xtol=xtol)
+            s_star = _x_to_s(float(x_star[0]), a, b)
+            fr = _residual(
+                s_star, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sigma
+            )
+            if not np.isfinite(fr):
+                continue
+            abs_ok = abs(fr) <= abs_threshold
+            rel_ok = s_star != 0.0 and abs(fr / s_star) <= tol_relative
+            if ier == 1 or abs_ok or rel_ok:
+                roots.append(s_star)
+        except Exception:
+            continue
 
+    # filter out values outside the bracket or below the minimal |σ0|
+    roots = [r for r in roots if (a <= r <= b) and (abs(r) >= sigma0_min_abs)]
+    roots = _unique_sorted(roots, tol=merge_tol)
 
-## Ψ2>0 post‑check
-#    final = []
-#    for r in chosen:
-#        psi2 = psi2_center(r, p0, eps0, xi, lmbda)
-#        if np.isfinite(psi2) and (psi2 > 0.0):
-#            final.append(r)
+    # evaluate residuals for acceptance; apply absolute then relative threshold
+    evals = []
+    for r in roots:
+        fr = _residual(
+            r, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, idx_sigma
+        )
+        evals.append((r, fr))
+    # absolute cut
+    abs_ok_roots = [r for (r, fr) in evals if abs(fr) <= abs_threshold]
+    chosen = abs_ok_roots
+    if not chosen:
+        # relaxed relative cut
+        rel_ok_roots = [
+            r for (r, fr) in evals if (r != 0.0 and abs(fr / r) <= tol_relative)
+        ]
+        chosen = rel_ok_roots
+
+    # Ψ2>0 post‑check
+    final = []
+    for r in chosen:
+        _, psi2 = _sigma2_psi2(r, p0, eps0, xi, lmbda)
+        if np.isfinite(psi2) and (psi2 > 0.0):
+            final.append(r)
+
+    return _unique_sorted(final, tol=merge_tol)
