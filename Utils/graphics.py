@@ -196,15 +196,16 @@ def custom_print(text, color="white", style="normal"):
         "magenta": Fore.MAGENTA,
         "cyan": Fore.CYAN,
         "white": Fore.WHITE,
+        "gray": Fore.LIGHTBLACK_EX,
     }
-    
+
     styles = {
         "normal": "",
         "bold": Style.BRIGHT,
         "dim": Style.DIM,
     }
-    
+
     color_code = colors.get(color.lower(), Fore.WHITE)
     style_code = styles.get(style.lower(), "")
-    
+
     print(f"{style_code}{color_code}{text}{Style.RESET_ALL}")

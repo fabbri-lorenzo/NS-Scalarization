@@ -1,13 +1,13 @@
 # DS_Store
 .DS_Store
 
-# Old files kept for reference
-OLDFILES/
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Old files kept for reference
+OLDFILES/
 
 # C extensions
 *.so

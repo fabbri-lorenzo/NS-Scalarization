@@ -68,3 +68,4 @@ def integrate_star(sigma0, p_eqState, rho_eqState, r0, r_max, xi, rho0, frac_pc,
 
     R_star_m = events.R_star  # set after solve
     return sol, mu2_log, R_star_m
+
