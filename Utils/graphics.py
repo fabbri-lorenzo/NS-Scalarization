@@ -27,6 +27,7 @@ def printResults_multi(entries, xi, star_weight):
 
     # --- Pressure profile ---
     plt.figure()
+    star_radii = []
     for i, e in enumerate(entries):
         sol = e["sol"]
         sty = styles[i % len(styles)]
@@ -37,8 +38,10 @@ def printResults_multi(entries, xi, star_weight):
             p_plot = y_plot[0]
         else:
             p_plot = np.interp(r_plot, sol.t, sol.y[0])
-        plt.plot(r_plot/1e3, p_plot, color='blue', **sty)
-        plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
+        plt.plot(r_plot / 1e3, p_plot, **sty)
+        star_radii.append(e["r_star"])
+    avg_R_star = np.mean([r for r in star_radii if r is not None])
+    plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
     plt.xlabel('r (Km)')
     plt.ylabel("P (Pa)")
     plt.grid(True); plt.title('Pressure profile EMG')
@@ -62,8 +65,8 @@ def printResults_multi(entries, xi, star_weight):
     #    Phi_norm_plot = phi_plot - phi_plot[-1]
     #    plt.plot(r_plot/1e3, m_plot*(c*c/G_N)/SM, label=f"m(r) [{e['label']}]", **sty)
     #
-    # for e in entries:
-    #    plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
+    #
+    # plt.axvline(x=avg_R_star, color=R_star_color, linestyle='--', alpha=0.25)
     #
     # for i, e in enumerate(entries):
     #    sol = e["sol"]; sty = styles[i % len(styles)].copy(); sty.update(alpha=0.6)
@@ -110,8 +113,7 @@ def printResults_multi(entries, xi, star_weight):
         sty = styles[i % len(styles)]
         plt.plot(r_plot, mu2_plot_km, label=rf"$\mu_{{\rm eff}}^2$ [{e['label']}]", **sty)
 
-    for e in entries:
-        plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
+    plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
     plt.axhline(0.0, color='black', linestyle='--', linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)'); plt.ylabel(r'$\mu_{\rm eff}^2$ (Km$^{-2}$)')
     plt.title('Effective Mass Squared Profile')
@@ -130,8 +132,8 @@ def printResults_multi(entries, xi, star_weight):
         else:
             sigma_plot = np.interp(r_plot, sol.t, sol.y[2])
         plt.plot(r_plot/1e3, sigma_plot/M, label=f"σ/M_Pl [{e['label']}]", **sty)
-    for e in entries:
-        plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
+
+    plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
     plt.xlabel('r (Km)')
     plt.legend(); plt.grid(True)
     plt.title('Scalar field σ(r) for EMG')
@@ -153,8 +155,8 @@ def printResults_multi(entries, xi, star_weight):
     #    plt.plot(r_plot/1e3, sigma_plot/sigma0, label=f"σ(r)/σ₀ [{e['label']}]", **sty)
     #
     ## vertical lines at R_star
-    # for e in entries:
-    #    plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
+    #
+    # plt.axvline(x=avg_R_star, color=R_star_color, linestyle='--', alpha=0.25)
     #
     ## annotate sigma0 values in the corner of the plot
     # text_lines = []

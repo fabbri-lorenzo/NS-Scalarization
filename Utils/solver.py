@@ -43,6 +43,20 @@ def adm_mass_from_solution(sol, k_tail=15):
 def integrate_star(sigma0, p_eqState, rho_eqState, r0, r_max, xi, rho0, frac_pc, stop_at_2r=True, record_mu2=False):
     r_span = (r0, r_max)
     y0 = initial_conditions(r0, sigma0, p_eqState, xi, rho0)
+
+    # If the center expansion is invalid (NaNs), return a minimal stub result.
+    if not np.all(np.isfinite(y0)):
+
+        class _Stub:
+            pass
+
+        sol = _Stub()
+        sol.t = np.array([r0], dtype=float)
+        sol.y = np.array(y0, dtype=float).reshape(4, 1)
+        R_star_m = None
+        mu2_log = []
+        return sol, mu2_log, R_star_m
+
     p_c = y0[0]
 
     mu2_log = []
@@ -53,19 +67,31 @@ def integrate_star(sigma0, p_eqState, rho_eqState, r0, r_max, xi, rho0, frac_pc,
 
     events = StoppingConditions(p_c, frac_pc)
     ev_surface = events.pressure_limit()
+    ev_blow = events.blowup_guard(xi)
 
     if stop_at_2r:
         ev_2R = events.double_radius()
         sol = solve_ivp(
-            tov, r_span, y0, dense_output=True, method='RK45',
-            rtol=1e-6, atol=1e-9, events=[ev_surface, ev_2R]
+            tov,
+            r_span,
+            y0,
+            dense_output=True,
+            method="RK45",
+            rtol=1e-6,
+            atol=1e-9,
+            events=[ev_surface, ev_2R, ev_blow],
         )
     else:
         sol = solve_ivp(
-            tov, r_span, y0, dense_output=True, method='RK45',
-            rtol=1e-6, atol=1e-9
+            tov,
+            r_span,
+            y0,
+            dense_output=True,
+            method="RK45",
+            rtol=1e-6,
+            atol=1e-9,
+            events=[ev_blow],
         )
 
     R_star_m = events.R_star  # set after solve
     return sol, mu2_log, R_star_m
-

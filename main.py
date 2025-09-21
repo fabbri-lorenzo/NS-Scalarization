@@ -26,7 +26,6 @@ frac_pc = 1e-10
 
 
 # Shooting method parameters
-# Use a wider bracket and a tighter absolute cutoff
 a, b = 1e-8 * M, 0.5 * M  #  Bracket for σ0
 # Increase the number of seeds to sample the bracket finely
 n_seeds = 25
