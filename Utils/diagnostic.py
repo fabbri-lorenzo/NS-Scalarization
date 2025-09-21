@@ -4,21 +4,44 @@ from Utils.TOV_EMG import _sigma2_psi2
 from Utils.solver import integrate_star
 
 
-def sigma_residual(s0, r0, r_max, p_eqState, rho_eqState, idx_sigma=2):
+def sigma_residual(
+    s0, r0, r_max, p_eqState, rho_eqState, xi, rho0, frac_pc, idx_sigma=2
+):
     """Return σ(r_max) from a single background integration."""
     sol, _, _ = integrate_star(
-        s0, p_eqState, rho_eqState, r0, r_max, stop_at_2r=False, record_mu2=False
+        s0,
+        p_eqState,
+        rho_eqState,
+        r0,
+        r_max,
+        xi,
+        rho0,
+        frac_pc,
+        stop_at_2r=False,
+        record_mu2=False,
     )
     return float(sol.y[idx_sigma, -1])
 
 
-def diagnostic_scan(r0, r_max, p_eqState, rho_eqState, a, b, n=201):
+def diagnostic_scan(r0, r_max, p_eqState, rho_eqState, xi, rho0, frac_pc, a, b, n=201):
     """Coarse scan of σ(r_max) over [a,b]: report sign changes and minima."""
     S = np.linspace(a, b, int(n))
     F = []
     for s in S:
         try:
-            F.append(sigma_residual(float(s), r0, r_max, p_eqState, rho_eqState, idx_sigma=2))
+            F.append(
+                sigma_residual(
+                    float(s),
+                    r0,
+                    r_max,
+                    p_eqState,
+                    rho_eqState,
+                    xi,
+                    rho0,
+                    frac_pc,
+                    idx_sigma=2,
+                )
+            )
         except Exception:
             F.append(np.nan)
     F = np.asarray(F, float)
@@ -41,10 +64,14 @@ def diagnostic_scan(r0, r_max, p_eqState, rho_eqState, a, b, n=201):
     return S, F, brackets, dips
 
 
-def print_candidate_info(s0_list, rho0, r0, r_max, xi_val, lmbda_val, p_eqState, rho_eqState,):
+def print_candidate_info(
+    s0_list, rho0, r0, r_max, xi_val, lmbda_val, p_eqState, rho_eqState, frac_pc
+):
     print("\n[diagnostics] accepted σ0 candidates:")
     for s0 in s0_list:
-        fr = sigma_residual(s0, r0, r_max, p_eqState, rho_eqState, idx_sigma=2)
+        fr = sigma_residual(
+            s0, r0, r_max, p_eqState, rho_eqState, xi_val, rho0, frac_pc, idx_sigma=2
+        )
         p0 = float(p_eqState(rho0))
         eps0 = float(rho0 * c * c)
         _, psi2 = _sigma2_psi2(s0, p0, eps0, xi_val, lmbda_val)

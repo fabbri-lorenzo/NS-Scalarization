@@ -22,7 +22,7 @@ frac_pc = 1e-10
 
 # Shooting method parameters
 a, b = 1e-8 * M, 0.5 * M  #  Bracket for σ0
-n_seeds = 15  # Number of initial seeds in the bracket
+n_seeds = 10  # Number of initial seeds in the bracket
 
 
 # ---------- main ----------
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     star_weight = ""
     if rho0 == rho0_lightS:
         star_weight = "L"  # Light star
-    elif rho0 == rho0_lightS:
+    elif rho0 == rho0_heavyS:
         star_weight = "H"  # Heavy star
 
     custom_print(
@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     # --- pre-scan (coarse) for visibility
     S, F, brackets, dips = diagnostic_scan(
-        r0, r_max, p_eqState, rho_eqState, a, b, n=201
+        r0, r_max, p_eqState, rho_eqState, xi_val, rho0, frac_pc, a, b, n=201
     )
     print(
         f"[diagnostics] scan over [{a/M:.1e},{b/M:.1e}] M: "
@@ -114,7 +114,9 @@ if __name__ == "__main__":
         raise RuntimeError("No σ0 roots found; see diagnostics above.")
 
     # --- print diagnostics for accepted candidates
-    print_candidate_info(s0_list)
+    print_candidate_info(
+        s0_list, rho0, r0, r_max, xi_val, lmbda_val, p_eqState, rho_eqState, frac_pc
+    )
 
     if not s0_list:
         raise RuntimeError("No σ0 roots found in the given bracket.")

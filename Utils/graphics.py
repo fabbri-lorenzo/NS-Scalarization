@@ -40,7 +40,7 @@ def printResults_multi(entries, xi, star_weight):
         plt.plot(r_plot/1e3, p_plot, color='blue', **sty)
         plt.axvline(x=e["r_star"], color=R_star_color, linestyle='--', alpha=0.25)
     plt.xlabel('r (Km)')
-    plt.xlabel('P (Pa)')
+    plt.ylabel("P (Pa)")
     plt.grid(True); plt.title('Pressure profile EMG')
     plt.tight_layout()
     plt.savefig(savepath + "pressure.png", dpi=dpi_val)

@@ -25,7 +25,7 @@ def node_count_to_2R(sol, R_star_m, idx_sigma=2):
         m = r <= 2.0 * R_star_m
         r = r[m]
         sigma = sigma[m]
-    return count_nodes_sigma(r, sigma)
+    return count_nodes_sigma(sigma)
 
 def adm_mass_from_solution(sol, k_tail=15):
             r   = sol.t
