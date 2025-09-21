@@ -1,92 +1,56 @@
 import numpy as np
-from scipy.integrate import solve_ivp
 
 from Utils.params import c, G_N, M, SM, lmbda_EMG, rho0_lightS, rho0_heavyS
-from Utils.TOV_EMG import initial_conditions, make_tov_EMG, StoppingConditions
 from Utils.shooting import shoot_sigma0 
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics import printResults_multi, custom_print
+from Utils.diagnostic import diagnostic_scan, print_candidate_info
+from Utils.solver import integrate_star, node_count_to_2R, adm_mass_from_solution
 
 import time
 
-# ---------- config ----------
-p_eqState   = p_SLy4
-rho_eqState = rho_SLy4
 
-rho0 = rho0_lightS
+# ---------- USER DEFINED PARAMETERS ----------
+p_eqState = p_SLy4  # Choose the EOS
+rho_eqState = rho_SLy4  # Choose the EOS
 
-star_weight = ""
-if rho0 == rho0_lightS:
-    star_weight = "L"  # Light star
-elif rho0 == rho0_lightS:
-    star_weight = "H"  # Heavy star
+rho0 = rho0_lightS  # Choose between light or heavy star
 
 xi_val = 50
 lmbda_val = lmbda_EMG
 frac_pc = 1e-10
 
-t0 = time.perf_counter()
-custom_print(f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ρ0 = {rho0:.1e}", style="bold")
+# Shooting method parameters
+a, b = 1e-8 * M, 0.5 * M  #  Bracket for σ0
+n_seeds = 15  # Number of initial seeds in the bracket
 
-# ---------- helpers ----------
-def count_nodes_sigma(r, sigma):
-    s = np.asarray(sigma, dtype=float)
-    if s.size < 2:
-        return 0
-    nz = s != 0
-    if nz.sum() < 2:
-        return 0
-    s = s[nz]
-    sign = np.sign(s)
-    return int(np.sum((sign[1:] * sign[:-1]) < 0.0))
-
-def node_count_to_2R(sol, R_star_m, idx_sigma=2):
-    if R_star_m is None or not np.isfinite(R_star_m):
-        r = sol.t
-        sigma = sol.y[idx_sigma]
-    else:
-        r = sol.t
-        sigma = sol.y[idx_sigma]
-        m = r <= 2.0 * R_star_m
-        r = r[m]
-        sigma = sigma[m]
-    return count_nodes_sigma(r, sigma)
-
-# Integrator wrapper (returns OdeResult, μ² log, and R_* in meters)
-def integrate_star(sigma0, p_eqState, rho_eqState, r0, r_max, xi=xi_val, stop_at_2r=True, record_mu2=False):
-    r_span = (r0, r_max)
-    y0 = initial_conditions(r0, sigma0, p_eqState, xi, rho0)
-    p_c = y0[0]
-
-    mu2_log = []
-    if record_mu2:
-        tov = make_tov_EMG(p_c, frac_pc, rho_eqState, xi, mu2_recorder=mu2_log.append)
-    else:
-        tov = make_tov_EMG(p_c, frac_pc, rho_eqState, xi)
-
-    events = StoppingConditions(p_c, frac_pc)
-    ev_surface = events.pressure_limit()
-
-    if stop_at_2r:
-        ev_2R = events.double_radius()
-        sol = solve_ivp(
-            tov, r_span, y0, dense_output=True, method='RK45',
-            rtol=1e-6, atol=1e-9, events=[ev_surface, ev_2R]
-        )
-    else:
-        sol = solve_ivp(
-            tov, r_span, y0, dense_output=True, method='RK45',
-            rtol=1e-6, atol=1e-9
-        )
-
-    R_star_m = events.R_star  # set after solve
-    return sol, mu2_log, R_star_m
 
 # ---------- main ----------
 if __name__ == "__main__":
+    t0 = time.perf_counter()
+
+    star_weight = ""
+    if rho0 == rho0_lightS:
+        star_weight = "L"  # Light star
+    elif rho0 == rho0_lightS:
+        star_weight = "H"  # Heavy star
+
+    custom_print(
+        f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ρ0 = {rho0:.1e}", style="bold"
+    )
+
     r0     = 1e-2         # m
     r_max  = 3e5          # m
     r_eval = np.linspace(r0, r_max, int(1e6))  # (not strictly needed here)
+
+    # --- pre-scan (coarse) for visibility
+    S, F, brackets, dips = diagnostic_scan(
+        r0, r_max, p_eqState, rho_eqState, a, b, n=201
+    )
+    print(
+        f"[diagnostics] scan over [{a/M:.1e},{b/M:.1e}] M: "
+        f"{np.sum(np.isfinite(F))}/{len(F)} finite samples, sign-change brackets={len(brackets)}, dips={len(dips)}"
+    )
 
     # --- 1) Find ALL σ0 roots via fsolve (absolute-first, then relative) ---
     s0_list = shoot_sigma0(
@@ -96,17 +60,61 @@ if __name__ == "__main__":
         r0=r0,
         r_max=r_max,
         xi=xi_val,
-        bracket=(1e-8 * M, 0.5 * M),
+        bracket=(a, b),  # σ≥0 (σ→-σ symmetry)
         rho0=rho0,
+        frac_pc=frac_pc,
         lmbda=lmbda_val,
-        abs_threshold=1e-10 * M,
+        abs_threshold=a * 1e-2,
         tol_relative=1e-2,
-        sigma0_min_abs=1e-8 * M,
-        n_seeds=45,
+        sigma0_min_abs=1e-9 * M,  # σ has to be ≥ abs_threshold to be accepted
+        n_seeds=n_seeds,
         xtol=1e-12,
         idx_sigma=2,
-        merge_tol=1e-8 * M,
+        merge_tol=1e-10 * M,  # tighter de-dup to keep close roots distinct
     )
+
+    # --- fallback: if empty, try local sub-brackets around sign-changes
+    if not s0_list:
+        print(
+            "[fallback] no roots found in global bracket; probing sign-change sub-brackets..."
+        )
+        candidates = []
+        for u, v in brackets:
+            try:
+                sub = shoot_sigma0(
+                    integrate_fn=integrate_star,
+                    p_eqState=p_eqState,
+                    rho_eqState=rho_eqState,
+                    r0=r0,
+                    r_max=r_max,
+                    xi=xi_val,
+                    bracket=(u, v),
+                    rho0=rho0,
+                    frac_pc=frac_pc,
+                    lmbda=lmbda_val,
+                    abs_threshold=a * 1e-2,
+                    tol_relative=1e-2,
+                    sigma0_min_abs=0.0,
+                    n_seeds=n_seeds,
+                    xtol=1e-12,
+                    idx_sigma=2,
+                    merge_tol=1e-10 * M,
+                )
+                candidates.extend(sub)
+            except Exception:
+                continue
+        # unique + assign back if anything found
+        s0_list = sorted({float(x) for x in candidates}, key=lambda z: abs(z))
+
+    if not s0_list:
+        # as a last hint to the user: report best dips
+        print("[fallback] still empty; reporting |σ(r_max)| minima as hints:")
+        for s, f in sorted(dips, key=lambda t: abs(t[1]))[:6]:
+            print(f"   near σ0/M≈{s/M:.3e}: |σ(r_max)|/M≈{abs(f)/M:.3e}")
+        raise RuntimeError("No σ0 roots found; see diagnostics above.")
+
+    # --- print diagnostics for accepted candidates
+    print_candidate_info(s0_list)
 
     if not s0_list:
         raise RuntimeError("No σ0 roots found in the given bracket.")
@@ -117,7 +125,16 @@ if __name__ == "__main__":
 
     for s0 in s0_list:
         sol, mu2_log, R_star_m = integrate_star(
-            s0, p_eqState, rho_eqState, r0, r_max, stop_at_2r=True, record_mu2=True
+            s0,
+            p_eqState,
+            rho_eqState,
+            r0,
+            r_max,
+            xi_val,
+            rho0,
+            frac_pc,
+            stop_at_2r=True,
+            record_mu2=True,
         )
 
         if R_star_m is None:
@@ -145,23 +162,32 @@ if __name__ == "__main__":
     plot_entries = []
     for n, s0 in list(sigma0_by_mode.items()):
         sol, mu2_log, R_star_m = integrate_star(
-            s0, p_eqState, rho_eqState, r0, r_max, stop_at_2r=True, record_mu2=True
+            s0,
+            p_eqState,
+            rho_eqState,
+            r0,
+            r_max,
+            xi_val,
+            rho0,
+            frac_pc,
+            stop_at_2r=True,
+            record_mu2=True,
         )
         r_star_km = (R_star_m/1e3) if (R_star_m is not None) else np.nan
 
         # Background leg for ADM mass & scalar charge
-        sol_bnd, _, _ = integrate_star(s0, p_eqState, rho_eqState, r0, r_max, stop_at_2r=False, record_mu2=False)
-
-        def adm_mass_from_solution(sol, k_tail=15):
-            r   = sol.t
-            Psi = sol.y[1]
-            r_tail   = r[-k_tail:]
-            Psi_tail = Psi[-k_tail:]
-            dPsi_tail = np.gradient(Psi_tail, r_tail)
-            M_vals = - (r_tail**2) * dPsi_tail * np.exp(-2.0*Psi_tail)
-            M_len  = np.median(M_vals)
-            M_kg   = M_len * (c*c) / G_N
-            return M_kg
+        sol_bnd, _, _ = integrate_star(
+            s0,
+            p_eqState,
+            rho_eqState,
+            r0,
+            r_max,
+            xi_val,
+            rho0,
+            frac_pc,
+            stop_at_2r=False,
+            record_mu2=False,
+        )
 
         ADM_mass = adm_mass_from_solution(sol_bnd, k_tail=15)
         R_log = R_star_m  # FIXME:
@@ -184,7 +210,7 @@ if __name__ == "__main__":
         })
 
     t_tot = time.perf_counter() - t0
-    print(f"Elapsed time: {t_tot:.2f} s")
+    print(f"Execution time: {t_tot:.2f} s")
 
     # --- 5) Plots
     printResults_multi(plot_entries, xi_val, star_weight)
