@@ -45,45 +45,11 @@ def printResults_multi(entries, xi, lmbda, star_weight):
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)')
     plt.ylabel("P (Pa)")
-    plt.grid(True); plt.title('Pressure profile EMG')
+    plt.grid(True)
+    plt.title("Pressure profile")
     plt.tight_layout()
     plt.savefig(savepath + "pressure.png", dpi=dpi_val)
     plt.show()
-
-    #    # --- Mass and metric ---
-    # plt.figure()
-    # for i, e in enumerate(entries):
-    #    sol = e["sol"]; sty = styles[i % len(styles)]
-    #    r_plot = np.linspace(sol.t[0], sol.t[-1], 4000)
-    #    if hasattr(sol, "sol") and callable(sol.sol):
-    #        y_plot = sol.sol(r_plot)
-    #        m_plot = y_plot[1]
-    #        phi_plot = y_plot[2]
-    #    else:
-    #        m_plot   = np.interp(r_plot, sol.t, sol.y[1])
-    #        phi_plot = np.interp(r_plot, sol.t, sol.y[2])
-    #
-    #    Phi_norm_plot = phi_plot - phi_plot[-1]
-    #    plt.plot(r_plot/1e3, m_plot*(c*c/G_N)/SM, label=f"m(r) [{e['label']}]", **sty)
-    #
-    #
-    # plt.axvline(x=avg_R_star, color=R_star_color, linestyle='--', alpha=0.25)
-    #
-    # for i, e in enumerate(entries):
-    #    sol = e["sol"]; sty = styles[i % len(styles)].copy(); sty.update(alpha=0.6)
-    #    r_plot = np.linspace(sol.t[0], sol.t[-1], 4000)
-    #    if hasattr(sol, "sol") and callable(sol.sol):
-    #        phi_plot = sol.sol(r_plot)[2]
-    #    else:
-    #        phi_plot = np.interp(r_plot, sol.t, sol.y[2])
-    #    Phi_norm_plot = phi_plot - phi_plot[-1]
-    #    plt.plot(r_plot/1e3, np.exp(Phi_norm_plot), label=f"e^(2Φ) [{e['label']}]", **sty)
-    #
-    # plt.xlabel('r (Km)')
-    # plt.legend(); plt.grid(True); plt.title('Mass & Metric profiles EMG')
-    # plt.tight_layout()
-    # plt.savefig(savepath + "mass_metric.png", dpi=dpi_val)
-    # plt.show()
 
     # --- Effective mass squared profile (uniform resample of logged points) ---
     plt.figure()
@@ -138,7 +104,7 @@ def printResults_multi(entries, xi, lmbda, star_weight):
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)')
     plt.legend(); plt.grid(True)
-    plt.title('Scalar field σ(r) for EMG')
+    plt.title("Scalar field σ(r)")
     plt.tight_layout()
     plt.savefig(savepath + "sigma_profile.png", dpi=dpi_val)
     plt.show()
@@ -165,24 +131,22 @@ def printResults_multi(entries, xi, lmbda, star_weight):
     # for i, e in enumerate(entries):
     #    sigma0 = e["sol"].y[3,0]/M # in Plank masses
     #    text_lines.append(f"{e['label']}: σ₀ = {sigma0:.2e}")
-
-
-#
-# plt.text(
-#    0.98, 0.02, "\n".join(text_lines),
-#    transform=plt.gca().transAxes,
-#    va="bottom", ha="right",
-#    fontsize=9,
-#    bbox=dict(boxstyle="round", facecolor="white", alpha=1.0)
-# )
-#
-#
-# plt.xlabel('r (Km)')
-# plt.legend(); plt.grid(True)
-# plt.title('Scalar field σ(r) for EMG')
-# plt.tight_layout()
-# plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)
-# plt.show()
+    #
+    # plt.text(
+    #    0.98, 0.02, "\n".join(text_lines),
+    #    transform=plt.gca().transAxes,
+    #    va="bottom", ha="right",
+    #    fontsize=9,
+    #    bbox=dict(boxstyle="round", facecolor="white", alpha=1.0)
+    # )
+    #
+    #
+    # plt.xlabel('r (Km)')
+    # plt.legend(); plt.grid(True)
+    # plt.title('Scalar field σ(r)')
+    # plt.tight_layout()
+    # plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)
+    # plt.show()
 
 # --- Colored printing utility ---
 from colorama import Fore, Style, init

@@ -23,10 +23,11 @@ p_eqState = p_SLy4  # Choose the EOS
 rho_eqState = rho_SLy4  # Choose the EOS
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
-rho0 = rho0_heavyS
-xi_val = 10
+rho0 = rho0_lightS
+xi_val = 1000
 lmbda_val = 0.0
-# lmbda_val = 1e20 / M**4
+# lmbda_val = 1 / M**2
+# lmbda_val = xi_val**2 * 1e-10 / 4.165
 
 
 # Shooting method parameters
@@ -50,18 +51,17 @@ if __name__ == "__main__":
         f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ρ0 = {rho0:.1e}\n", style="bold"
     )
 
-    r0     = 1e-2         # m
-    # Increase r_max so that σ(r_max) is smaller on the n=1 branch
-    r_max = 5e5  # m
+    r0 = 1e-2  # m
+    r_max = 3e5  # m
     r_eval = np.linspace(r0, r_max, int(1e6))  # (not strictly needed here)
 
     # --- pre-scan (coarse) for visibility
-    S, F, brackets, dips = diagnostic_scan(
+    S, F, brackets = diagnostic_scan(
         r0, r_max, p_eqState, rho_eqState, xi_val, lmbda_val, rho0, frac_pc, a, b, n=201
     )
     custom_print(
         f"[diagnostics] scan over [{a/M:.1e},{b/M:.1e}]*M: "
-        f"{np.sum(np.isfinite(F))}/{len(F)} finite samples, sign-change brackets={len(brackets)}, dips={len(dips)}",
+        f"{np.sum(np.isfinite(F))}/{len(F)} finite samples, sign-change brackets={len(brackets)}",
         color="gray",
     )
 
@@ -120,7 +120,7 @@ if __name__ == "__main__":
             "[fallback] still empty; reporting |σ(r_max)| minima as hints:",
             color="yellow",
         )
-        for s, f in sorted(dips, key=lambda t: abs(t[1]))[:6]:
+        for s, f in sorted(key=lambda t: abs(t[1]))[:6]:
             custom_print(
                 f"   near σ0/M≈{s/M:.3e}: |σ(r_max)|/M≈{abs(f)/M:.3e}",
                 color="yellow",
@@ -128,9 +128,14 @@ if __name__ == "__main__":
         raise RuntimeError("No σ0 roots found; see diagnostics above.")
 
     # --- print diagnostics for accepted candidates
-    print_candidate_info(
+    s_maxes = print_candidate_info(
         s0_list, rho0, r0, r_max, xi_val, lmbda_val, p_eqState, rho_eqState, frac_pc
     )
+    # align σ(r_max) with σ0 list (order-preserving)
+    smax_by_s0 = {s: sm for s, sm in zip(s0_list, s_maxes)}
+
+    # --- decide how many solutions to keep based on sign-change brackets
+    target_solutions = len(brackets)
 
     if not s0_list:
         raise RuntimeError("No σ0 roots found in the given bracket.")
@@ -159,25 +164,33 @@ if __name__ == "__main__":
             continue
 
         n_nodes = node_count_to_2R(sol, R_star_m, idx_sigma=2)
-        per_mode.setdefault(n_nodes, []).append(dict(
-            s0=s0, sol=sol, mu2_log=mu2_log, R_star_m=R_star_m
-        ))
+        per_mode.setdefault(n_nodes, []).append(
+            dict(
+                s0=s0, sol=sol, mu2_log=mu2_log, R_star_m=R_star_m, smax=smax_by_s0[s0]
+            )
+        )
 
-    # --- 3) Select desired modes (e.g., n=0,1): choose smallest |σ0| if multiple ---
-    sigma0_by_mode = {}
+    # --- 3) Select modes until we have as many solutions as sign-change brackets ---
+    sigma0_by_mode = {}  # maps node count n -> chosen sigma0
     n = 0
-    miss_streak = 0
-    while miss_streak < 2:
+    while len(sigma0_by_mode) < target_solutions:
         cands = per_mode.get(n, [])
         if not cands:
-            miss_streak += 1
             custom_print(f"[MISS] No candidate with n={n} nodes.", color="red")
         else:
-            miss_streak = 0  # reset streak if a candidate is found
-            pick = min(cands, key=lambda d: abs(d["s0"]))
-            sigma0_by_mode[n] = pick["s0"]
-            custom_print(f"[OK] n={n}: σ₀ = {pick['s0']/M:.4e} M_Pl", color="cyan")
+            # choose the smallest |σ0| among candidates with this node count
+            pick = min(cands, key=lambda d: abs(d["smax"]))
+            if n not in sigma0_by_mode:
+                sigma0_by_mode[n] = pick["s0"]
+                custom_print(f"[OK] n={n}: σ₀ = {pick['s0']/M:.4e} M_Pl ", color="cyan")
         n += 1
+
+    if len(sigma0_by_mode) < target_solutions:
+        custom_print(
+            f"[WARN] Only {len(sigma0_by_mode)} solution(s) selected "
+            f"out of target {target_solutions}. Consider widening the bracket or relaxing thresholds.",
+            color="yellow",
+        )
 
     # --- 4) Final integrate (again) for selected modes for plotting + diagnostics ---
     plot_entries = []

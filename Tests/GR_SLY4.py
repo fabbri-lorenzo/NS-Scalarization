@@ -55,14 +55,19 @@ def integrate_star(r0, r_max):
     p_c = y0[0]
 
     def surface(r, y):
-     return y[0] - 1e-15*p_c  # pressure
+        return y[0] - 1e-15*p_c  # pressure
     surface.terminal = True
     surface.direction = -1
 
-    sol = solve_ivp(tov_system, r_span, y0,
-                    method='Radau', rtol=1e-6,
-                    atol=np.array([1e-8, 1e-10, 1e-10]),
-                    events=surface)
+    sol = solve_ivp(
+        tov_system,
+        r_span,
+        y0,
+        method="RK45",
+        rtol=1e-6,
+        atol=np.array([1e-8, 1e-10, 1e-10]),
+        events=surface,
+    )
 
     print("» solver msg:", sol.message)
     return sol

@@ -131,7 +131,7 @@ def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
         # effective mass squared
         mu2 = -(xi / F_val) * (
             1 / g11 * dsigma**2
-            + 4 * V(sigma)
+            + 4 * V(sigma, lmbda)
             + eps
             - 3 * p
             + 6

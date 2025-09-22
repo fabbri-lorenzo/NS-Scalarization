@@ -89,159 +89,120 @@ def tail_charge_with_Rlog(sol, R_log, *, idx_sigmap=3, r_window=("frac", 0.5, 0.
     return float(np.median(Q_samples))
 
 
+# NEW: utility to robustly sample the tail (uses dense_output if present)
+def _sample_tail(sol, idx_sigmap=3, r_window=("frac", 0.5, 0.95), n_points=400):
+    """
+    Returns (r_tail, sigma_p_tail) sampled uniformly in r over the chosen window.
+    If sol.sol is available (dense_output=True), we evaluate it; otherwise we downsample sol.t/sol.y.
+    """
+    import numpy as np
+
+    r_all = np.asarray(sol.t, dtype=float)
+    # choose window (fractional or absolute)
+    if isinstance(r_window, tuple) and len(r_window) == 3 and r_window[0] == "frac":
+        _, f1, f2 = r_window
+        r1 = r_all.min() + f1 * (r_all.max() - r_all.min())
+        r2 = r_all.min() + f2 * (r_all.max() - r_all.min())
+    else:
+        r1, r2 = r_window
+
+    if r2 <= r1:
+        r1, r2 = r1, max(r1 * (1.0 + 1e-6), r1 + 1e-6)
+
+    # primary: dense_output
+    r_tail = None
+    sp_tail = None
+    if hasattr(sol, "sol") and callable(sol.sol):
+        r_tail = np.linspace(r1, r2, int(max(50, n_points)))
+        y_tail = sol.sol(r_tail)  # shape (n_state, n_points)
+        sp_tail = np.asarray(y_tail[idx_sigmap], dtype=float)
+    else:
+        # fallback: use raw points within window, then (optionally) interpolate
+        mask = (r_all >= r1) & (r_all <= r2)
+        r_raw = r_all[mask]
+        sp_raw = np.asarray(sol.y[idx_sigmap], dtype=float)[mask]
+        if r_raw.size >= 10:
+            r_tail = r_raw
+            sp_tail = sp_raw
+        else:
+            # last-ditch: take last chunk of domain
+            mask = r_all >= (r_all.min() + 0.8 * (r_all.max() - r_all.min()))
+            r_tail = r_all[mask]
+            sp_tail = np.asarray(sol.y[idx_sigmap], dtype=float)[mask]
+
+    # final sanitation
+    finite = np.isfinite(sp_tail)
+    r_tail = r_tail[finite]
+    sp_tail = sp_tail[finite]
+    return r_tail, sp_tail
+
+
 # Robust tail fit for (Q, R_log) in the λ≠0 case
+# REPLACE your existing fit_tail_Rlog_and_Q with this more robust version
 def fit_tail_Rlog_and_Q(
     sol,
     *,
     idx_sigma=2,
     idx_sigmap=3,
-    r_window=(
-        1.0e4,
-        1.0e5,
-    ),  # you can also pass ('frac', 0.2, 0.6) to use a fraction of r_max
-    min_points=40
+    r_window=("frac", 0.2, 0.6),  # use fractional by default to avoid empty windows
+    min_points=40,
+    n_points=600
 ):
     """
-    Fit the far-field tail to sigma'(r) ≈ -Q / (r^2 * sqrt(ln(r/R_log))).
-    Returns (Q_fit, R_log_fit) in code units (Q in your native units for sigma).
-
-    Notes:
-    - Enforces R_log < min(r_window) to keep the log positive across the fit window.
-    - Uses only points with finite, non-zero sigma'.
-    - If the explicit numeric window has too few points, falls back to the last 50% of the domain.
+    Fit sigma'(r) ≈ -Q / (r^2 * sqrt(ln(r/R_log))) over the far-field tail.
+    Uses dense_output to ensure enough points; includes multi-stage fallbacks.
+    Returns (Q_fit, R_log_fit).
     """
     import numpy as np
     from scipy.optimize import curve_fit
 
-    r = np.asarray(sol.t)
-    # default indices: y[idx_sigma] = sigma, y[idx_sigmap] = sigma'
-    sigma_p = np.asarray(sol.y[idx_sigmap], dtype=float)
+    # 1) try the requested window
+    r_fit, sp_fit = _sample_tail(
+        sol, idx_sigmap=idx_sigmap, r_window=r_window, n_points=n_points
+    )
 
-    # Allow fractional window definition
-    if isinstance(r_window, tuple) and len(r_window) == 3 and r_window[0] == "frac":
-        _, f1, f2 = r_window
-        r1 = r.min() + f1 * (r.max() - r.min())
-        r2 = r.min() + f2 * (r.max() - r.min())
-    else:
-        r1, r2 = r_window
-
-    mask = (r >= r1) & (r <= r2) & np.isfinite(sigma_p) & (sigma_p != 0.0)
-    r_fit = r[mask]
-    sp_fit = sigma_p[mask]
-
-    # Fallback: use last 50% if we don't have enough samples
+    # 2) fallback if insufficient
     if r_fit.size < min_points:
-        r1_fb = r.min() + 0.5 * (r.max() - r.min())
-        mask_fb = (r >= r1_fb) & np.isfinite(sigma_p) & (sigma_p != 0.0)
-        r_fit = r[mask_fb]
-        sp_fit = sigma_p[mask_fb]
+        # use last 50% of domain
+        r_fit, sp_fit = _sample_tail(
+            sol, idx_sigmap=idx_sigmap, r_window=("frac", 0.5, 0.98), n_points=n_points
+        )
+
+    # 3) last fallback
+    if r_fit.size < min_points:
+        r_fit, sp_fit = _sample_tail(
+            sol, idx_sigmap=idx_sigmap, r_window=("frac", 0.7, 0.995), n_points=n_points
+        )
 
     if r_fit.size < min_points:
         raise RuntimeError(
             "fit_tail_Rlog_and_Q: insufficient tail points for a stable fit"
         )
 
-    # Model: sigma'(r) = -Q / (r^2 * sqrt(ln(r/R_log)))
+    # model
     def model(rvals, Q, lnR):
         L = np.log(rvals) - lnR
-        # numerical safety: clamp L away from 0 to avoid divide-by-zero during fitting
         L = np.maximum(L, 1e-12)
         return -Q / (rvals**2 * np.sqrt(L))
 
-    # Initial guesses: Q ~ -sp * r^2 (ignoring the sqrt log); take median magnitude
+    # initial guesses
     q0_samples = -sp_fit * (r_fit**2)
-    q0 = np.median(q0_samples)
-    lnR0 = np.log(max(r_fit.min() * 0.1, 1.0))
+    q0 = float(np.median(q0_samples[np.isfinite(q0_samples)]))
+    lnR0 = float(np.log(max(r_fit.min() * 0.2, 1.0)))
 
-    # Constrain R_log < min(r_fit) so ln(r/R_log) stays positive in-window
-    upper_lnR = np.log(r_fit.min() * 0.999)
+    # bounds to keep ln(r/R) > 0 in-window
+    upper_lnR = float(np.log(r_fit.min() * 0.999))
     bounds = ([-np.inf, -np.inf], [np.inf, upper_lnR])
 
     popt, _ = curve_fit(
-        model, r_fit, sp_fit, p0=(q0, lnR0), bounds=bounds, maxfev=20000
+        model, r_fit, sp_fit, p0=(q0, lnR0), bounds=bounds, maxfev=50000
     )
     Q_fit, lnR_fit = popt
-    R_log_fit = float(np.exp(lnR_fit))
-    return float(Q_fit), R_log_fit
-
-
-# Robust tail fit for (Q, R_log) in the λ≠0 case
-def fit_tail_Rlog_and_Q(
-    sol,
-    *,
-    idx_sigma=2,
-    idx_sigmap=3,
-    r_window=(
-        1.0e4,
-        1.0e5,
-    ),  # you can also pass ('frac', 0.2, 0.6) to use a fraction of r_max
-    min_points=40
-):
-    """
-    Fit the far-field tail to sigma'(r) ≈ -Q / (r^2 * sqrt(ln(r/R_log))).
-    Returns (Q_fit, R_log_fit) in code units (Q in your native units for sigma).
-
-    Notes:
-    - Enforces R_log < min(r_window) to keep the log positive across the fit window.
-    - Uses only points with finite, non-zero sigma'.
-    - If the explicit numeric window has too few points, falls back to the last 50% of the domain.
-    """
-    import numpy as np
-    from scipy.optimize import curve_fit
-
-    r = np.asarray(sol.t)
-    # default indices: y[idx_sigma] = sigma, y[idx_sigmap] = sigma'
-    sigma_p = np.asarray(sol.y[idx_sigmap], dtype=float)
-
-    # Allow fractional window definition
-    if isinstance(r_window, tuple) and len(r_window) == 3 and r_window[0] == "frac":
-        _, f1, f2 = r_window
-        r1 = r.min() + f1 * (r.max() - r.min())
-        r2 = r.min() + f2 * (r.max() - r.min())
-    else:
-        r1, r2 = r_window
-
-    mask = (r >= r1) & (r <= r2) & np.isfinite(sigma_p) & (sigma_p != 0.0)
-    r_fit = r[mask]
-    sp_fit = sigma_p[mask]
-
-    # Fallback: use last 50% if we don't have enough samples
-    if r_fit.size < min_points:
-        r1_fb = r.min() + 0.5 * (r.max() - r.min())
-        mask_fb = (r >= r1_fb) & np.isfinite(sigma_p) & (sigma_p != 0.0)
-        r_fit = r[mask_fb]
-        sp_fit = sigma_p[mask_fb]
-
-    if r_fit.size < min_points:
-        raise RuntimeError(
-            "fit_tail_Rlog_and_Q: insufficient tail points for a stable fit"
-        )
-
-    # Model: sigma'(r) = -Q / (r^2 * sqrt(ln(r/R_log)))
-    def model(rvals, Q, lnR):
-        L = np.log(rvals) - lnR
-        # numerical safety: clamp L away from 0 to avoid divide-by-zero during fitting
-        L = np.maximum(L, 1e-12)
-        return -Q / (rvals**2 * np.sqrt(L))
-
-    # Initial guesses: Q ~ -sp * r^2 (ignoring the sqrt log); take median magnitude
-    q0_samples = -sp_fit * (r_fit**2)
-    q0 = np.median(q0_samples)
-    lnR0 = np.log(max(r_fit.min() * 0.1, 1.0))
-
-    # Constrain R_log < min(r_fit) so ln(r/R_log) stays positive in-window
-    upper_lnR = np.log(r_fit.min() * 0.999)
-    bounds = ([-np.inf, -np.inf], [np.inf, upper_lnR])
-
-    popt, _ = curve_fit(
-        model, r_fit, sp_fit, p0=(q0, lnR0), bounds=bounds, maxfev=20000
-    )
-    Q_fit, lnR_fit = popt
-    R_log_fit = float(np.exp(lnR_fit))
-    return float(Q_fit), R_log_fit
+    return float(Q_fit), float(np.exp(lnR_fit))
 
 
 # Scal_charge_from_sol now auto-fits R_log when λ ≠ 0 and tail-averages Q
+# REPLACE your scal_charge_from_sol with this version (adds multi-try fit windows + graceful fallback)
 def scal_charge_from_sol(
     sol,
     lmbda,
@@ -249,45 +210,65 @@ def scal_charge_from_sol(
     *,
     idx_sigma=2,
     idx_sigmap=3,
-    r_window_Q=("frac", 0.6, 0.95),  # window to aggregate Q after R_log is known
-    R_log_override=None  # if you already know R_log, pass it to skip the fit
+    r_window_Q=("frac", 0.6, 0.95),
+    R_log_override=None
 ):
     """
-    Compute scalar charge Q with correct λ-dependent asymptotics.
-
-    - For λ == 0: uses your original 1/r^2 tail: Q = - r_max^2 * sigma'(r_max)
-    - For λ != 0:
-        * If R_log_override is None: fit (Q, R_log) on the tail from sigma'(r).
-        * Then re-estimate Q by robust tail-averaging with the fitted R_log (reduces noise).
-    Returns Q in code units, then converts to your physical units via (c^2/G_N)/M, matching your convention.
+    Scalar charge with λ-dependent asymptotics.
+    - λ == 0: Q = - r_max^2 * sigma'(r_max) (then convert to physical units).
+    - λ != 0: fit (Q, R_log) on the tail robustly, then aggregate Q over the tail.
     """
     import numpy as np
-    from Utils.params import M, c, G_N  # keep your existing import style
+    from Utils.params import M, c, G_N
 
+    # λ = 0 path (paper-level asymptotics)
     if lmbda == 0.0:
         Q_num = -(r_max**2) * float(sol.y[idx_sigmap][-1])
-        Q = Q_num / M * (c * c) / G_N
-        return Q
+        return Q_num / M * (c * c) / G_N
 
-    # λ ≠ 0: determine R_log (fit if not provided), then compute robust Q
-
-    if R_log_override is None:
-        r_window_fit = (r_max * 0.5, r_max)
-        Q_fit, R_log = fit_tail_Rlog_and_Q(
-            sol, idx_sigma=idx_sigma, idx_sigmap=idx_sigmap, r_window=r_window_fit
-        )
-    else:
+    # λ ≠ 0: determine R_log
+    if R_log_override is not None:
         R_log = float(R_log_override)
-        Q_fit = None  # not used further
+    else:
+        # try several windows to avoid "insufficient tail points"
+        tried = [
+            ("frac", 0.2, 0.6),
+            ("frac", 0.4, 0.9),
+            ("frac", 0.6, 0.98),
+        ]
+        last_err = None
+        for win in tried:
+            try:
+                _, R_log = fit_tail_Rlog_and_Q(
+                    sol,
+                    idx_sigma=idx_sigma,
+                    idx_sigmap=idx_sigmap,
+                    r_window=win,
+                    min_points=40,
+                    n_points=800,
+                )
+                break
+            except Exception as e:
+                last_err = e
+                R_log = None
+        if R_log is None:
+            # graceful fallback: pick R_log = 0.2 * r_min_tail to keep ln positive
+            r_tail, sp_tail = _sample_tail(
+                sol, idx_sigmap=idx_sigmap, r_window=("frac", 0.6, 0.98), n_points=400
+            )
+            if r_tail.size < 10:
+                # absolute last resort: use last raw point
+                r_tail = np.asarray(sol.t[-50:], dtype=float)
+                sp_tail = np.asarray(sol.y[idx_sigmap][-50:], dtype=float)
+            R_log = float(max(1.0, 0.2 * np.nanmin(r_tail)))
 
-    # Robust tail-aggregated Q using the chosen/fitted R_log
+    # aggregate Q over tail
     Q_num = tail_charge_with_Rlog(
         sol, R_log, idx_sigmap=idx_sigmap, r_window=r_window_Q
     )
 
-    # Convert to your physical normalization
-    Q = Q_num / M * (c * c) / G_N
-    return Q
+    # convert to physical normalization
+    return Q_num / M * (c * c) / G_N
 
 
 # Integrator wrapper (returns OdeResult, μ² log, and R_* in meters)

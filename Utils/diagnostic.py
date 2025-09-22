@@ -30,7 +30,7 @@ def sigma_residual(
 def diagnostic_scan(
     r0, r_max, p_eqState, rho_eqState, xi, lmbda, rho0, frac_pc, a, b, n=201
 ):
-    """Coarse scan of σ(r_max) over [a,b]: report sign changes and minima."""
+    """Coarse scan of σ(r_max) over [a,b]: report sign changes"""
     S = np.linspace(a, b, int(n))
     F = []
     for s in S:
@@ -62,13 +62,8 @@ def diagnostic_scan(
             and (f1 == 0 or f2 == 0 or (f1 * f2 < 0))
         ):
             brackets.append((S[i], S[i + 1]))
-    # local minima in |F|
-    dips = []
-    for i in range(1, len(S) - 1):
-        if np.isfinite(F[i - 1]) and np.isfinite(F[i]) and np.isfinite(F[i + 1]):
-            if abs(F[i]) <= abs(F[i - 1]) and abs(F[i]) <= abs(F[i + 1]):
-                dips.append((S[i], F[i]))
-    return S, F, brackets, dips
+
+    return S, F, brackets
 
 
 def print_candidate_info(
@@ -76,6 +71,7 @@ def print_candidate_info(
 ):
     """Print diagnostic information for a list of accepted σ₀ values."""
     custom_print("\n[diagnostics] accepted σ0 candidates:", color="gray")
+    s_maxes = []
     for s0 in s0_list:
         fr = sigma_residual(
             s0,
@@ -96,6 +92,8 @@ def print_candidate_info(
             f"σ0/M = {s0/M:.6e} |σ(r_max)|/M = {abs(fr)/M:.3e} | Ψ2 = {psi2:.3e}",
             color="gray",
         )
+        s_maxes.append(abs(fr))
+    return s_maxes
 
 
 def find_root_brent(
