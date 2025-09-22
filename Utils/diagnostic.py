@@ -6,8 +6,9 @@ from Utils.solver import integrate_star
 from Utils.graphics import custom_print
 from scipy.optimize import brentq
 
+
 def sigma_residual(
-    s0, r0, r_max, p_eqState, rho_eqState, xi, rho0, frac_pc, idx_sigma=2
+    s0, r0, r_max, p_eqState, rho_eqState, xi, lmbda, rho0, frac_pc, idx_sigma=2
 ):
     """Return σ(r_max) from a single background integration."""
     sol, _, _ = integrate_star(
@@ -17,6 +18,7 @@ def sigma_residual(
         r0,
         r_max,
         xi,
+        lmbda,
         rho0,
         frac_pc,
         stop_at_2r=False,
@@ -25,7 +27,9 @@ def sigma_residual(
     return float(sol.y[idx_sigma, -1])
 
 
-def diagnostic_scan(r0, r_max, p_eqState, rho_eqState, xi, rho0, frac_pc, a, b, n=201):
+def diagnostic_scan(
+    r0, r_max, p_eqState, rho_eqState, xi, lmbda, rho0, frac_pc, a, b, n=201
+):
     """Coarse scan of σ(r_max) over [a,b]: report sign changes and minima."""
     S = np.linspace(a, b, int(n))
     F = []
@@ -39,6 +43,7 @@ def diagnostic_scan(r0, r_max, p_eqState, rho_eqState, xi, rho0, frac_pc, a, b, 
                     p_eqState,
                     rho_eqState,
                     xi,
+                    lmbda,
                     rho0,
                     frac_pc,
                     idx_sigma=2,
@@ -73,7 +78,16 @@ def print_candidate_info(
     custom_print("\n[diagnostics] accepted σ0 candidates:", color="gray")
     for s0 in s0_list:
         fr = sigma_residual(
-            s0, r0, r_max, p_eqState, rho_eqState, xi_val, rho0, frac_pc, idx_sigma=2
+            s0,
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi_val,
+            lmbda_val,
+            rho0,
+            frac_pc,
+            idx_sigma=2,
         )
         p0 = float(p_eqState(rho0))
         eps0 = float(rho0 * c * c)
@@ -92,6 +106,7 @@ def find_root_brent(
     p_eqState,
     rho_eqState,
     xi,
+    lmbda,
     rho0,
     frac_pc,
     idx_sigma: int = 2,
@@ -133,6 +148,7 @@ def find_root_brent(
             p_eqState,
             rho_eqState,
             xi,
+            lmbda,
             rho0,
             frac_pc,
             idx_sigma=idx_sigma,
@@ -214,6 +230,7 @@ def probe_brackets_with_brent(
             p_eqState,
             rho_eqState,
             xi_val,
+            lmbda_val,
             rho0,
             frac_pc,
             idx_sigma=idx_sigma,

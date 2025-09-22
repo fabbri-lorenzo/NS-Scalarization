@@ -2,11 +2,21 @@ import numpy as np
 from scipy.optimize import fsolve
 
 from Utils.TOV_EMG import _sigma2_psi2
-from Utils.params import c, M, lmbda_EMG as LAMBDA_DEFAULT
+from Utils.params import c
 
 
 def _sigma_rmax(
-    s0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, rho0, frac_pc, idx_sigma=2
+    s0,
+    integrate_fn,
+    p_eqState,
+    rho_eqState,
+    r0,
+    r_max,
+    xi,
+    lmbda,
+    rho0,
+    frac_pc,
+    idx_sigma=2,
 ):
     """
     Integrate the system with central scalar amplitude ``s0`` and return the value
@@ -22,6 +32,7 @@ def _sigma_rmax(
         r0,
         r_max,
         xi,
+        lmbda,
         rho0,
         frac_pc,
         stop_at_2r=False,
@@ -31,7 +42,17 @@ def _sigma_rmax(
 
 
 def _residual(
-    s0, integrate_fn, p_eqState, rho_eqState, r0, r_max, xi, rho0, frac_pc, idx_sigma=2
+    s0,
+    integrate_fn,
+    p_eqState,
+    rho_eqState,
+    r0,
+    r_max,
+    xi,
+    lmbda,
+    rho0,
+    frac_pc,
+    idx_sigma=2,
 ):
     """Wrapper around ``_sigma_rmax`` that guards against exceptions and
     non‑finite results.  Returns a large value on failure.
@@ -45,6 +66,7 @@ def _residual(
             r0,
             r_max,
             xi,
+            lmbda,
             rho0,
             frac_pc,
             idx_sigma,
@@ -91,7 +113,7 @@ def shoot_sigma0(
     bracket,  # (a, b) in SAME UNITS as σ0
     rho0,  # for Ψ2 check
     frac_pc,
-    lmbda=LAMBDA_DEFAULT,
+    lmbda,
     abs_threshold=1e-10,
     tol_relative=1e-2,
     n_seeds=41,
@@ -126,6 +148,7 @@ def shoot_sigma0(
                 r0,
                 r_max,
                 xi,
+                lmbda,
                 rho0,
                 frac_pc,
                 idx_sigma,
@@ -152,6 +175,7 @@ def shoot_sigma0(
                     r0,
                     r_max,
                     xi,
+                    lmbda,
                     rho0,
                     frac_pc,
                     idx_sigma,
@@ -179,6 +203,7 @@ def shoot_sigma0(
                 r0,
                 r_max,
                 xi,
+                lmbda,
                 rho0,
                 frac_pc,
                 idx_sigma,
@@ -211,6 +236,7 @@ def shoot_sigma0(
             r0,
             r_max,
             xi,
+            lmbda,
             rho0,
             frac_pc,
             idx_sigma,

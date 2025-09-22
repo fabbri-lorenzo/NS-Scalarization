@@ -1,6 +1,6 @@
 import numpy as np
 
-from Utils.params import c, G_N, M, SM, lmbda_EMG, rho0_lightS, rho0_heavyS
+from Utils.params import M, SM, rho0_lightS, rho0_heavyS
 from Utils.shooting import shoot_sigma0 
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics import printResults_multi, custom_print
@@ -9,27 +9,30 @@ from Utils.diagnostic import (
     print_candidate_info,
     probe_brackets_with_brent,
 )
-from Utils.solver import integrate_star, node_count_to_2R, adm_mass_from_solution
+from Utils.solver import (
+    integrate_star,
+    node_count_to_2R,
+    adm_mass_from_sol,
+    scal_charge_from_sol,
+)
 
 import time
 
 # ---------- USER DEFINED PARAMETERS ----------
 p_eqState = p_SLy4  # Choose the EOS
 rho_eqState = rho_SLy4  # Choose the EOS
+frac_pc = 1e-10  # Fraction of p_c to stop integration
 
-# Choose between light or heavy star
 rho0 = rho0_heavyS
-
-xi_val = -15
-lmbda_val = lmbda_EMG
-frac_pc = 1e-10
+xi_val = 10
+lmbda_val = 0.0
+# lmbda_val = 1e20 / M**4
 
 
 # Shooting method parameters
 a, b = 1e-8 * M, 0.5 * M  #  Bracket for σ0
 # Increase the number of seeds to sample the bracket finely
 n_seeds = 25
-modes = (0, 1, 2)  # Modes to search for (0,1,2,...)
 # ---------------------------------------------
 
 
@@ -54,7 +57,7 @@ if __name__ == "__main__":
 
     # --- pre-scan (coarse) for visibility
     S, F, brackets, dips = diagnostic_scan(
-        r0, r_max, p_eqState, rho_eqState, xi_val, rho0, frac_pc, a, b, n=201
+        r0, r_max, p_eqState, rho_eqState, xi_val, lmbda_val, rho0, frac_pc, a, b, n=201
     )
     custom_print(
         f"[diagnostics] scan over [{a/M:.1e},{b/M:.1e}]*M: "
@@ -144,6 +147,7 @@ if __name__ == "__main__":
             r0,
             r_max,
             xi_val,
+            lmbda_val,
             rho0,
             frac_pc,
             stop_at_2r=True,
@@ -161,14 +165,19 @@ if __name__ == "__main__":
 
     # --- 3) Select desired modes (e.g., n=0,1): choose smallest |σ0| if multiple ---
     sigma0_by_mode = {}
-    for n in modes:
+    n = 0
+    miss_streak = 0
+    while miss_streak < 2:
         cands = per_mode.get(n, [])
         if not cands:
+            miss_streak += 1
             custom_print(f"[MISS] No candidate with n={n} nodes.", color="red")
-            continue
-        pick = min(cands, key=lambda d: abs(d["s0"]))
-        sigma0_by_mode[n] = pick["s0"]
-        custom_print(f"[OK] n={n}: σ₀ = {pick['s0']/M:.4e} M_Pl", color="cyan")
+        else:
+            miss_streak = 0  # reset streak if a candidate is found
+            pick = min(cands, key=lambda d: abs(d["s0"]))
+            sigma0_by_mode[n] = pick["s0"]
+            custom_print(f"[OK] n={n}: σ₀ = {pick['s0']/M:.4e} M_Pl", color="cyan")
+        n += 1
 
     # --- 4) Final integrate (again) for selected modes for plotting + diagnostics ---
     plot_entries = []
@@ -201,12 +210,9 @@ if __name__ == "__main__":
             record_mu2=False,
         )
 
-        ADM_mass = adm_mass_from_solution(sol_bnd, k_tail=15)
-        R_log = R_star_m  # FIXME:
-        if lmbda_val != 0.0:
-            scalar_charge = -r_max**2 * np.sqrt(np.log(r_max/max(R_log, 1.0))) * sol_bnd.y[3][-1]/M * (c*c) / G_N
-        else:
-            scalar_charge = -r_max**2 * sol_bnd.y[3][-1]/M * (c*c) / G_N
+        ADM_mass = adm_mass_from_sol(sol_bnd, k_tail=15)
+        scalar_charge = scal_charge_from_sol(sol_bnd, lmbda_val, r_max)
+
         custom_print(f"\nResults for n={n} mode", style="bold")
         print("ADM mass / M_sun = ", f"{ADM_mass/SM:.2e}")
         print("Scalar charge / M_sun = ", f"{scalar_charge/SM:.2e}")
@@ -225,4 +231,4 @@ if __name__ == "__main__":
     custom_print(f"\nExecution time: {t_tot:.0f} s", style="dim")
 
     # --- 5) Plots
-    printResults_multi(plot_entries, xi_val, star_weight)
+    printResults_multi(plot_entries, xi_val, lmbda_val, star_weight)

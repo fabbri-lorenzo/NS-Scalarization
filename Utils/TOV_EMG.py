@@ -1,26 +1,24 @@
-from Utils.params import c, M2, lmbda_EMG
+from Utils.params import c, M2
 import numpy as np
-
-lmbda = lmbda_EMG
 
 
 # === INITIAL CONDITIONS EMG (SI) — regular O(r^2) center expansion ===
-def _sigma2_psi2(sigma0, p0, eps0, xi, lmbda=lmbda):
+def _sigma2_psi2(sigma0, p0, eps0, xi, lmbda):
     # Denominator in the σ₂ expression; can vanish for large |xi| or σ₀
-    denom_sigma = 6 * (M2 + xi * sigma0**2 - 2 * xi**2 * sigma0**2)
-    if (not np.isfinite(denom_sigma)) or (abs(denom_sigma) < 1e-30):
-        # Return NaNs so the integrator can treat this initial guess as invalid
-        return float("nan"), float("nan")
+    denom_sigma = 6 * (M2 + xi * sigma0**2 + 6 * xi**2 * sigma0**2)
+    # if (not np.isfinite(denom_sigma)) or (abs(denom_sigma) < 1e-30):
+    # Return NaNs so the integrator can treat this initial guess as invalid
+    #    return float("nan"), float("nan")
     sigma2 = (M2 * lmbda * sigma0**3 - xi * sigma0 * (eps0 - 3 * p0)) / denom_sigma
 
     denom_Psi = 6 * (M2 + xi * sigma0**2)
-    if (not np.isfinite(denom_Psi)) or (abs(denom_Psi) < 1e-30):
-        return float("nan"), float("nan")
+    # if (not np.isfinite(denom_Psi)) or (abs(denom_Psi) < 1e-30):
+    #    return float("nan"), float("nan")
     Psi2 = (12 * xi * sigma0 * sigma2 + eps0 + 0.25 * lmbda * sigma0**4) / denom_Psi
     return sigma2, Psi2
 
 
-def initial_conditions(r0, sigma0, p_eqState, xi, rho0):
+def initial_conditions(r0, sigma0, p_eqState, xi, rho0, lmbda):
     # --- central thermodynamics ---
     p0   = float(p_eqState(rho0))
     eps0 = float(rho0 * c * c)
@@ -37,6 +35,7 @@ def initial_conditions(r0, sigma0, p_eqState, xi, rho0):
 
     return [p_c, Psi_c, sigma_c, dsigma_c]
 
+
 # === Scalar-Tensor Functions ===
 def F(sigma, xi):
     return M2+ xi* sigma**2
@@ -44,14 +43,17 @@ def F(sigma, xi):
 def dF_dsigma(sigma,xi):
     return 2 * xi * sigma
 
-def V(sigma):
+
+def V(sigma, lmbda):
     return 0.25 * lmbda * sigma**4
 
-def dV_dsigma(sigma):
+
+def dV_dsigma(sigma, lmbda):
     return lmbda * sigma**3
 
+
 # === System of First-Order ODEs ===
-def make_tov_EMG(p_c,frac_pc, rho_eqState, xi, mu2_recorder=None):
+def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
 
     def tov_system(r, y):
         p, Psi, sigma, dsigma = y
@@ -69,19 +71,15 @@ def make_tov_EMG(p_c,frac_pc, rho_eqState, xi, mu2_recorder=None):
         exponent = np.clip(2.0 * Psi, -700.0, 700.0)
         g11 = np.exp(exponent)
 
-        denom = 2.0 * F_val + r * F_prime
-        if denom == 0.0:
-            return [np.inf, np.inf, np.inf, np.inf]
-
         # dΦ/dr
         denom_dPhi = 2 * F_val + r * F_prime
-        if (not np.isfinite(denom_dPhi)) or (abs(denom_dPhi) < 1e-30):
-            return [np.inf, np.inf, np.inf, np.inf]
+        # if (not np.isfinite(denom_dPhi)) or (abs(denom_dPhi) < 1e-30):
+        #    return [np.inf, np.inf, np.inf, np.inf]
 
         dPhi = (1 / denom_dPhi) * (
             F_val * (g11 - 1) / r
             + 0.5 * r * dsigma**2
-            + (p - V(sigma)) * r * g11
+            + (p - V(sigma, lmbda)) * r * g11
             - 2 * F_prime
         )
 
@@ -92,15 +90,15 @@ def make_tov_EMG(p_c,frac_pc, rho_eqState, xi, mu2_recorder=None):
             + r**2
             * (
                 2 * xi * ((dPhi + 2 / r) * sigma * dsigma + dsigma**2)
-                + g11 * (eps + V(sigma))
+                + g11 * (eps + V(sigma, lmbda))
                 + (dsigma**2) / 2
             )
         )
 
         # d²σ/dr²
         denom_ddsigma = 2 * F_val * (F_val + 6 * xi**2 * sigma**2)
-        if (not np.isfinite(denom_ddsigma)) or (abs(denom_ddsigma) < 1e-30):
-            return [np.inf, np.inf, np.inf, np.inf]
+        # if (not np.isfinite(denom_ddsigma)) or (abs(denom_ddsigma) < 1e-30):
+        #    return [np.inf, np.inf, np.inf, np.inf]
 
         dd_sigma = (
             (2 * F_val + r * F_prime)
@@ -108,7 +106,7 @@ def make_tov_EMG(p_c,frac_pc, rho_eqState, xi, mu2_recorder=None):
             * (
                 F_val
                 * (
-                    g11 * dV_dsigma(sigma)
+                    g11 * dV_dsigma(sigma, lmbda)
                     - dPhi * dsigma
                     - 2 * dsigma / r
                     + Psi_bar * dsigma
@@ -117,7 +115,7 @@ def make_tov_EMG(p_c,frac_pc, rho_eqState, xi, mu2_recorder=None):
                 * sigma
                 * (
                     dsigma**2
-                    + g11 * (4 * (V(sigma)) + eps - 3 * p)
+                    + g11 * (4 * (V(sigma, lmbda)) + eps - 3 * p)
                     + 6 * xi * ((dPhi - Psi_bar + 2 / r) * sigma * dsigma + dsigma**2)
                 )
             )
@@ -147,6 +145,7 @@ def make_tov_EMG(p_c,frac_pc, rho_eqState, xi, mu2_recorder=None):
 
         return [dp, dPsi, dsigma, dd_sigma]
     return tov_system  
+
 
 # === Stopping Conditions ===
 class StoppingConditions:

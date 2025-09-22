@@ -8,13 +8,13 @@ R_star_color = 'c'
 dpi_val = 600
 
 
-def printResults_multi(entries, xi, star_weight):
+def printResults_multi(entries, xi, lmbda, star_weight):
     """
     entries: list of dicts with keys
       ['label','sol','r_star','r_mu','mu2']
     Makes one figure per quantity, overlaying curves for each entry.
     """
-    savepath = f"Results/Results_{star_weight}_xi={xi:.0f}/"
+    savepath = f"Results_lmbda={lmbda:.0e}/Results_{star_weight}_xi={xi:.0f}/"
     os.makedirs(savepath, exist_ok=True)
 
     # style cycle (extend if you add more modes)
@@ -42,6 +42,7 @@ def printResults_multi(entries, xi, star_weight):
         star_radii.append(e["r_star"])
     avg_R_star = np.mean([r for r in star_radii if r is not None])
     plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
+    plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)')
     plt.ylabel("P (Pa)")
     plt.grid(True); plt.title('Pressure profile EMG')
@@ -134,6 +135,7 @@ def printResults_multi(entries, xi, star_weight):
         plt.plot(r_plot/1e3, sigma_plot/M, label=f"σ/M_Pl [{e['label']}]", **sty)
 
     plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
+    plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)')
     plt.legend(); plt.grid(True)
     plt.title('Scalar field σ(r) for EMG')
