@@ -1,6 +1,6 @@
 import numpy as np
 
-from Utils.params import M, SM, rho0_lightS, rho0_heavyS
+from Utils.params import M, M2, SM, rho0_lightS, rho0_heavyS
 from Utils.shooting import shoot_sigma0 
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics import printResults_multi, custom_print
@@ -25,10 +25,12 @@ rho_eqState = rho_SLy4  # Choose the EOS
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 rho0 = rho0_lightS
-xi_val = 1000
-# lmbda_val = 0.0
-# lmbda_val = 1 / M**2
-lmbda_val = xi_val**2 * 1e-10 / 4.165
+
+xi_interval = [-1e4, 1e4]  # Range of ξ to scan
+xi_step = 50  # Step size in ξ
+
+lmbda_interval = [1e-5/M2, 1e5/M2]  # Range of λ to scan
+lmbda_step = 5e4/M2  # Step size in λ
 
 
 # Shooting method parameters
@@ -38,9 +40,10 @@ n_seeds = 25
 # ---------------------------------------------
 
 
+t0 = time.perf_counter()
+
 # ---------- main ----------
 if __name__ == "__main__":
-    t0 = time.perf_counter()
 
     star_weight = ""
     if rho0 == rho0_lightS:
