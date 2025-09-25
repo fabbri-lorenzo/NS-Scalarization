@@ -1,16 +1,28 @@
 import numpy as np
 from scipy.optimize import brentq
 from Utils.params import c, M
-from Utils.TOV_EMG import _sigma2_psi2
+from Utils.TOV import _sigma2_psi2
 from Utils.solver import integrate_star
+from Utils.shooting import _delta_to_target
 from Utils.graphics import custom_print
 from scipy.optimize import brentq
 
 
 def sigma_residual(
-    s0, r0, r_max, p_eqState, rho_eqState, xi, lmbda, rho0, frac_pc, idx_sigma=2
+    s0,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    lmbda,
+    nu,
+    rho0,
+    frac_pc,
+    idx_sigma=2,
+    target=0.0,
 ):
-    """Return σ(r_max) from a single background integration."""
+    """Return σ(r_max)−t* where t* is the nearest target to σ(r_max)."""
     sol, _, _ = integrate_star(
         s0,
         p_eqState,
@@ -19,18 +31,31 @@ def sigma_residual(
         r_max,
         xi,
         lmbda,
+        nu,
         rho0,
         frac_pc,
         stop_at_2r=False,
         record_mu2=False,
     )
-    return float(sol.y[idx_sigma, -1])
+    val = float(sol.y[idx_sigma, -1])
+    return _delta_to_target(val, target)
 
 
 def diagnostic_scan(
-    r0, r_max, p_eqState, rho_eqState, xi, lmbda, rho0, frac_pc, a, b, n=201
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    lmbda,
+    nu_val,
+    rho0,
+    frac_pc,
+    a,
+    b,
+    n=201,
+    target=0.0,
 ):
-    """Coarse scan of σ(r_max) over [a,b]: report sign changes"""
     S = np.linspace(a, b, int(n))
     F = []
     for s in S:
@@ -44,15 +69,16 @@ def diagnostic_scan(
                     rho_eqState,
                     xi,
                     lmbda,
+                    nu_val,
                     rho0,
                     frac_pc,
                     idx_sigma=2,
+                    target=target,
                 )
             )
         except Exception:
             F.append(np.nan)
     F = np.asarray(F, float)
-    # sign-change brackets
     brackets = []
     for i in range(len(S) - 1):
         f1, f2 = F[i], F[i + 1]
@@ -62,12 +88,21 @@ def diagnostic_scan(
             and (f1 == 0 or f2 == 0 or (f1 * f2 < 0))
         ):
             brackets.append((S[i], S[i + 1]))
-
     return S, F, brackets
 
 
 def print_candidate_info(
-    s0_list, rho0, r0, r_max, xi_val, lmbda_val, p_eqState, rho_eqState, frac_pc
+    s0_list,
+    rho0,
+    r0,
+    r_max,
+    xi_val,
+    lmbda_val,
+    nu_val,
+    p_eqState,
+    rho_eqState,
+    frac_pc,
+    target,
 ):
     """Print diagnostic information for a list of accepted σ₀ values."""
     custom_print("\n[diagnostics] accepted σ0 candidates:", color="gray")
@@ -81,13 +116,14 @@ def print_candidate_info(
             rho_eqState,
             xi_val,
             lmbda_val,
+            nu_val,
             rho0,
             frac_pc,
-            idx_sigma=2,
+            target,
         )
         p0 = float(p_eqState(rho0))
         eps0 = float(rho0 * c * c)
-        _, psi2 = _sigma2_psi2(s0, p0, eps0, xi_val, lmbda_val)
+        _, psi2 = _sigma2_psi2(s0, p0, eps0, xi_val, lmbda_val, nu_val)
         custom_print(
             f"σ0/M = {s0/M:.6e} |σ(r_max)|/M = {abs(fr)/M:.3e} | Ψ2 = {psi2:.3e}",
             color="gray",
@@ -105,39 +141,14 @@ def find_root_brent(
     rho_eqState,
     xi,
     lmbda,
+    nu,
     rho0,
     frac_pc,
     idx_sigma: int = 2,
     rtol: float = 1e-12,
     maxiter: int = 200,
+    target=0.0,
 ):
-    """
-    Robustly find a root of σ(r_max) within the bracket [u, v] using Brent’s method.
-
-    Parameters
-    ----------
-    u, v : float
-        Endpoints of the bracket where σ(r_max) changes sign.
-    r0, r_max : float
-        Integration bounds passed to integrate_star.
-    p_eqState, rho_eqState : callable
-        Equation of state functions.
-    xi, rho0, frac_pc : float
-        Model parameters passed to the integrator.
-    idx_sigma : int, optional
-        Index of the scalar field component in the solution vector.
-    rtol : float, optional
-        Relative tolerance for the Brent solver.
-    maxiter : int, optional
-        Maximum iterations for the Brent solver.
-
-    Returns
-    -------
-    tuple
-        (s_star, f_star) where s_star is the root in [u, v] (or None on failure)
-        and f_star = σ(r_max) at s_star.
-    """
-
     def f(s0):
         return sigma_residual(
             s0,
@@ -147,11 +158,12 @@ def find_root_brent(
             rho_eqState,
             xi,
             lmbda,
+            nu,
             rho0,
             frac_pc,
             idx_sigma=idx_sigma,
+            target=target,
         )
-
     try:
         s_star = brentq(f, float(u), float(v), rtol=rtol, maxiter=maxiter)
         return float(s_star), float(f(s_star))
@@ -170,9 +182,11 @@ def probe_brackets_with_brent(
     rho0,
     frac_pc,
     lmbda_val,
+    nu_val,
     abs_threshold,
     tol_relative,
     merge_tol,
+    target=0.0,
     idx_sigma: int = 2,
 ):
     """
@@ -229,8 +243,10 @@ def probe_brackets_with_brent(
             rho_eqState,
             xi_val,
             lmbda_val,
+            nu_val,
             rho0,
             frac_pc,
+            target,
             idx_sigma=idx_sigma,
         )
         # bail out on failure
@@ -254,19 +270,17 @@ def probe_brackets_with_brent(
         accept = False
         reason = None
         if abs(fr) <= abs_threshold:
-            accept = True
-            reason = "abs"
+            accept, reason = True, "abs"
         elif s_star != 0.0 and abs(fr / s_star) <= tol_relative:
-            accept = True
-            reason = "rel"
+            accept, reason = True, "rel"
 
         # Ψ2>0 regularity check
-        _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, lmbda_val)
+        _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, lmbda_val, nu_val)
         psi_ok = np.isfinite(psi2) and (psi2 > 0.0)
 
         if accept and psi_ok:
             custom_print(
-                f"[brent] ACCEPT σ0/M={s_star/M:.6e}  |σ(r_max)|/M={abs(fr)/M:.3e}  Ψ2={psi2:.3e}  via={reason}",
+                f"[brent] ACCEPT σ0/M={s_star/M:.6e}  |residual|/M={abs(fr)/M:.3e}  Ψ2={psi2:.3e}  via={reason}",
                 color="green",
             )
             candidates.append(s_star)
@@ -279,7 +293,7 @@ def probe_brackets_with_brent(
                 msg.append(f"Ψ2≤0 (Ψ2={psi2:.3e})")
             why = "; ".join(msg) if msg else "unknown"
             custom_print(
-                f"[brent] REJECT σ0/M={s_star/M:.6e}  |σ(r_max)|/M={abs(fr)/M:.3e}  → {why}",
+                f"[brent] REJECT σ0/M={s_star/M:.6e}  |residual|/M={abs(fr)/M:.3e}  → {why}",
                 color="red",
             )
 

@@ -3,29 +3,29 @@ import numpy as np
 
 
 # === INITIAL CONDITIONS EMG (SI) — regular O(r^2) center expansion ===
-def _sigma2_psi2(sigma0, p0, eps0, xi, lmbda):
+def _sigma2_psi2(sigma0, p0, eps0, xi, lmbda,nu):
     # Denominator in the σ₂ expression; can vanish for large |xi| or σ₀
     denom_sigma = 6 * (M2 + xi * sigma0**2 + 6 * xi**2 * sigma0**2)
     # if (not np.isfinite(denom_sigma)) or (abs(denom_sigma) < 1e-30):
     # Return NaNs so the integrator can treat this initial guess as invalid
     #    return float("nan"), float("nan")
-    sigma2 = (M2 * lmbda * sigma0**3 - xi * sigma0 * (eps0 - 3 * p0)) / denom_sigma
+    sigma2 = (M2 * lmbda * sigma0**3 - xi * sigma0 * (eps0 - 3 * p0 +lmbda*nu**4 -2*lmbda*nu**2*sigma0**2)) / denom_sigma
 
     denom_Psi = 6 * (M2 + xi * sigma0**2)
     # if (not np.isfinite(denom_Psi)) or (abs(denom_Psi) < 1e-30):
     #    return float("nan"), float("nan")
-    Psi2 = (12 * xi * sigma0 * sigma2 + eps0 + 0.25 * lmbda * sigma0**4) / denom_Psi
+    Psi2 = (12 * xi * sigma0 * sigma2 + eps0 + 0.25 * lmbda * sigma0**4 + 0.25 * lmbda *nu**4-0.5*lmbda*nu**2*sigma0**2) / denom_Psi
     return sigma2, Psi2
 
 
-def initial_conditions(r0, sigma0, p_eqState, xi, rho0, lmbda):
+def initial_conditions(r0, sigma0, p_eqState, xi, rho0, lmbda,nu):
     # --- central thermodynamics ---
     p0   = float(p_eqState(rho0))
     eps0 = float(rho0 * c * c)
 
-    sigma2, Psi2 = _sigma2_psi2(sigma0, p0, eps0, xi, lmbda)
+    sigma2, Psi2 = _sigma2_psi2(sigma0, p0, eps0, xi, lmbda, nu)
 
-    Phi2= (2*M2*Psi2 + 2*xi*sigma0**2*Psi2 -8*xi*sigma0*sigma2 + p0-0.25*lmbda*sigma0**4)/(4*M2 + 4*xi*sigma0**2)
+    Phi2= (2*M2*Psi2 + 2*xi*sigma0**2*Psi2 -8*xi*sigma0*sigma2 + p0-0.25*lmbda*sigma0**4 -0.25*lmbda*nu**4 + 0.5*lmbda*nu**2*sigma0**2)/(4*M2 + 4*xi*sigma0**2)
 
     p2 = -(p0 + eps0) * Phi2
     p_c = p0 + r0**2 * p2
@@ -44,16 +44,16 @@ def dF_dsigma(sigma,xi):
     return 2 * xi * sigma
 
 
-def V(sigma, lmbda):
-    return 0.25 * lmbda * sigma**4
+def V(sigma, lmbda,nu):
+    return 0.25 * lmbda * (sigma**2 -nu**2)**2
 
 
-def dV_dsigma(sigma, lmbda):
-    return lmbda * sigma**3
+def dV_dsigma(sigma, lmbda,nu):
+    return lmbda * (sigma**3-nu**2 * sigma)
 
 
 # === System of First-Order ODEs ===
-def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
+def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, nu, mu2_recorder=None):
 
     def tov_system(r, y):
         p, Psi, sigma, dsigma = y
@@ -79,7 +79,7 @@ def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
         dPhi = (1 / denom_dPhi) * (
             F_val * (g11 - 1) / r
             + 0.5 * r * dsigma**2
-            + (p - V(sigma, lmbda)) * r * g11
+            + (p - V(sigma, lmbda, nu)) * r * g11
             - 2 * F_prime
         )
 
@@ -90,7 +90,7 @@ def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
             + r**2
             * (
                 2 * xi * ((dPhi + 2 / r) * sigma * dsigma + dsigma**2)
-                + g11 * (eps + V(sigma, lmbda))
+                + g11 * (eps + V(sigma, lmbda, nu))
                 + (dsigma**2) / 2
             )
         )
@@ -106,7 +106,7 @@ def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
             * (
                 F_val
                 * (
-                    g11 * dV_dsigma(sigma, lmbda)
+                    g11 * dV_dsigma(sigma, lmbda, nu)
                     - dPhi * dsigma
                     - 2 * dsigma / r
                     + Psi_bar * dsigma
@@ -115,7 +115,7 @@ def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
                 * sigma
                 * (
                     dsigma**2
-                    + g11 * (4 * (V(sigma, lmbda)) + eps - 3 * p)
+                    + g11 * (4 * (V(sigma, lmbda, nu)) + eps - 3 * p)
                     + 6 * xi * ((dPhi - Psi_bar + 2 / r) * sigma * dsigma + dsigma**2)
                 )
             )
@@ -131,7 +131,7 @@ def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, mu2_recorder=None):
         # effective mass squared
         mu2 = -(xi / F_val) * (
             1 / g11 * dsigma**2
-            + 4 * V(sigma, lmbda)
+            + 4 * V(sigma, lmbda, nu)
             + eps
             - 3 * p
             + 6

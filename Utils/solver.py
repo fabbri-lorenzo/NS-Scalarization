@@ -1,6 +1,6 @@
 from scipy.integrate import solve_ivp
 import numpy as np
-from Utils.TOV_EMG import initial_conditions, make_tov_EMG, StoppingConditions  
+from Utils.TOV import initial_conditions, make_tov_EMG, StoppingConditions
 from Utils.params import c, G_N
 
 # ---------- helpers ----------
@@ -82,8 +82,7 @@ def tail_charge_with_Rlog(sol, R_log, *, idx_sigmap=3, r_window=("frac", 0.5, 0.
         sp_tail = sp[mask]
 
     # compute Q(r) samples
-    L = np.log(np.maximum(r_tail, 1.0)) - np.log(max(R_log, 1.0))
-    L = np.maximum(L, 1e-12)  # avoid sqrt(0)
+    L = np.log(r_tail) - np.log(R_log)
     Q_samples = -sp_tail * (r_tail**2) * np.sqrt(L)
 
     return float(np.median(Q_samples))
@@ -202,10 +201,76 @@ def fit_tail_Rlog_and_Q(
 
 
 # Scal_charge_from_sol now auto-fits R_log when λ ≠ 0 and tail-averages Q
-# REPLACE your scal_charge_from_sol with this version (adds multi-try fit windows + graceful fallback)
+# NEW: Yukawa-tail charge from σ (not σ′)
+def tail_charge_yukawa(
+    sol, m, nu, *, idx_sigma=2, r_window=("frac", 0.6, 0.95), n_points=400
+):
+    """
+    Compute Q for a Yukawa tail:
+        σ(r) ≈ σ_∞ + (Q/r) * e^{-m r},  with  σ_∞ = ±|nu|.
+    Robustly estimate Q over a tail window using:
+        Q(r) = r * e^{m r} * (σ(r) - σ_∞),
+    then return the median over the window.
+
+    Notes:
+    - Using σ (not σ′) avoids the asymptotic (1 + m r) blow-up in σ′.
+    - σ_∞ sign is chosen by matching the tail to +|nu| or -|nu|.
+    """
+    import numpy as np
+
+    # choose window (fractional or absolute) and sample, using dense_output when available
+    r_all = np.asarray(sol.t, dtype=float)
+    if isinstance(r_window, tuple) and len(r_window) == 3 and r_window[0] == "frac":
+        _, f1, f2 = r_window
+        r1 = r_all.min() + f1 * (r_all.max() - r_all.min())
+        r2 = r_all.min() + f2 * (r_all.max() - r_all.min())
+    else:
+        r1, r2 = r_window
+    if r2 <= r1:
+        r2 = max(r1 * (1.0 + 1e-6), r1 + 1e-6)
+
+    # sample tail
+    if hasattr(sol, "sol") and callable(sol.sol):
+        r_tail = np.linspace(r1, r2, int(max(50, n_points)))
+        y_tail = sol.sol(r_tail)  # (n_state, n_points)
+        sigma_tail = np.asarray(y_tail[idx_sigma], dtype=float)
+    else:
+        mask = (r_all >= r1) & (r_all <= r2)
+        r_tail = r_all[mask]
+        sigma_tail = np.asarray(sol.y[idx_sigma], dtype=float)[mask]
+        if r_tail.size < 10:  # fallback: last 20% of domain
+            mask = r_all >= (r_all.min() + 0.8 * (r_all.max() - r_all.min()))
+            r_tail = r_all[mask]
+            sigma_tail = np.asarray(sol.y[idx_sigma], dtype=float)[mask]
+
+    finite = np.isfinite(sigma_tail)
+    r_tail = r_tail[finite]
+    sigma_tail = sigma_tail[finite]
+    if r_tail.size < 10:
+        raise RuntimeError("tail_charge_yukawa: insufficient tail points")
+
+    # pick σ_∞ = ±|nu| by best match to the tail
+    nu_abs = float(abs(nu))
+    s_plus = nu_abs
+    s_minus = -nu_abs
+    # choose the sign minimizing the L2 mismatch in the window
+    if np.mean((sigma_tail - s_plus) ** 2) <= np.mean((sigma_tail - s_minus) ** 2):
+        sigma_inf = s_plus
+    else:
+        sigma_inf = s_minus
+
+    # Q(r) samples: r * e^{m r} * (σ - σ_inf)
+    Q_samples = r_tail * np.exp(m * r_tail) * (sigma_tail - sigma_inf)
+
+    # be robust to small subleading 1/r corrections: median is stable
+    return float(np.median(Q_samples))
+
+
+# REPLACE: scal_charge_from_sol — now branches DEF / QUARTIC / YUKAWA correctly
 def scal_charge_from_sol(
     sol,
     lmbda,
+    nu,
     r_max,
     *,
     idx_sigma=2,
@@ -214,19 +279,35 @@ def scal_charge_from_sol(
     R_log_override=None
 ):
     """
-    Scalar charge with λ-dependent asymptotics.
-    - λ == 0: Q = - r_max^2 * sigma'(r_max) (then convert to physical units).
-    - λ != 0: fit (Q, R_log) on the tail robustly, then aggregate Q over the tail.
+    Scalar charge with correct asymptotics by regime:
+      - DEF (λ==0 and ν==0):       Q = - r_max^2 * σ'(r_max).
+      - Pure quartic (λ>0, ν==0):  fit R_log (or use override) and tail-average Q_log(r) = - r^2 σ' sqrt(ln(r/R_log)).
+      - Yukawa (ν!=0):             use σ-tail: Q(r) = r * e^{m r} * (σ - σ_∞), median over a tail window.
+
+    Returns Q in your physical normalization, matching your previous convention.
     """
     import numpy as np
     from Utils.params import M, c, G_N
 
-    # λ = 0 path (paper-level asymptotics)
-    if lmbda == 0.0:
+    # --- DEF: massless linear (Coulomb) ---
+    if (lmbda == 0.0) and (nu == 0.0):
         Q_num = -(r_max**2) * float(sol.y[idx_sigmap][-1])
         return Q_num / M * (c * c) / G_N
 
-    # λ ≠ 0: determine R_log
+    # --- YUKAWA: m = sqrt(2 λ) |ν|, use σ-based estimator (stable) ---
+    if nu != 0.0:
+        m = float(np.sqrt(max(0.0, 2.0 * lmbda)) * abs(nu))
+        if m == 0.0:
+            # degenerate corner: falls back to DEF definition
+            Q_num = -(r_max**2) * float(sol.y[idx_sigmap][-1])
+        else:
+            Q_num = tail_charge_yukawa(
+                sol, m, nu, idx_sigma=idx_sigma, r_window=r_window_Q
+            )
+        return Q_num / M * (c * c) / G_N
+
+    # --- PURE QUARTIC: ν==0, λ>0 → log-improved Coulomb ---
+    # fit R_log if needed, then aggregate with your existing estimator
     if R_log_override is not None:
         R_log = float(R_log_override)
     else:
@@ -236,6 +317,7 @@ def scal_charge_from_sol(
             ("frac", 0.4, 0.9),
             ("frac", 0.6, 0.98),
         ]
+        R_log = None
         last_err = None
         for win in tried:
             try:
@@ -252,22 +334,15 @@ def scal_charge_from_sol(
                 last_err = e
                 R_log = None
         if R_log is None:
-            # graceful fallback: pick R_log = 0.2 * r_min_tail to keep ln positive
-            r_tail, sp_tail = _sample_tail(
-                sol, idx_sigmap=idx_sigmap, r_window=("frac", 0.6, 0.98), n_points=400
-            )
-            if r_tail.size < 10:
-                # absolute last resort: use last raw point
-                r_tail = np.asarray(sol.t[-50:], dtype=float)
-                sp_tail = np.asarray(sol.y[idx_sigmap][-50:], dtype=float)
-            R_log = float(max(1.0, 0.2 * np.nanmin(r_tail)))
+            # graceful fallback: keep ln(r/R)>0 on the tail
+            r_all = np.asarray(sol.t, dtype=float)
+            r_min_tail = r_all.min() + 0.6 * (r_all.max() - r_all.min())
+            R_log = float(max(1.0, 0.2 * r_min_tail))
 
-    # aggregate Q over tail
+    # aggregate Q over tail for the quartic case
     Q_num = tail_charge_with_Rlog(
         sol, R_log, idx_sigmap=idx_sigmap, r_window=r_window_Q
     )
-
-    # convert to physical normalization
     return Q_num / M * (c * c) / G_N
 
 

@@ -25,16 +25,19 @@ rho_eqState = rho_SLy4  # Choose the EOS
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 rho0 = rho0_lightS
-xi_val = 1000
-# lmbda_val = 0.0
+xi_val = 0.05
+lmbda_val = 0.0
 # lmbda_val = 1 / M**2
-lmbda_val = xi_val**2 * 1e-10 / 4.165
+# lmbda_val = xi_val**2 * 1e-10 / 4.165
+nu_val = 0.0
+# nu_val = 246e9 * 9e-7
 
 
 # Shooting method parameters
 a, b = 1e-8 * M, 0.5 * M  #  Bracket for σ0
 # Increase the number of seeds to sample the bracket finely
 n_seeds = 25
+target_shooting = [0.0] if nu_val == 0.0 else [abs(nu_val), -abs(nu_val)]
 # ---------------------------------------------
 
 
@@ -42,14 +45,18 @@ n_seeds = 25
 if __name__ == "__main__":
     t0 = time.perf_counter()
 
-    star_weight = ""
+    star_weight, sw = "", ""
+
     if rho0 == rho0_lightS:
         star_weight = "L"  # Light star
+        sw = "Light"
     elif rho0 == rho0_heavyS:
         star_weight = "H"  # Heavy star
+        sw = "Heavy"
 
     custom_print(
-        f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ρ0 = {rho0:.1e}\n", style="bold"
+        f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ν = {nu_val:.2e} | {sw} star.",
+        style="bold",
     )
 
     r0 = 1e-2  # m
@@ -58,7 +65,19 @@ if __name__ == "__main__":
 
     # --- pre-scan (coarse) for visibility
     S, F, brackets = diagnostic_scan(
-        r0, r_max, p_eqState, rho_eqState, xi_val, lmbda_val, rho0, frac_pc, a, b, n=201
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi_val,
+        lmbda_val,
+        nu_val,
+        rho0,
+        frac_pc,
+        a,
+        b,
+        n=201,
+        target=target_shooting,
     )
     custom_print(
         f"[diagnostics] scan over [{a/M:.1e},{b/M:.1e}]*M: "
@@ -82,7 +101,9 @@ if __name__ == "__main__":
         bracket=(a, b),  # σ≥0 (σ→-σ symmetry)
         rho0=rho0,
         frac_pc=frac_pc,
+        target=target_shooting,
         lmbda=lmbda_val,
+        nu=nu_val,
         abs_threshold=abs_cut,
         tol_relative=rel_cut,
         sigma0_min_abs=0.0,  # allow tiny amplitudes near threshold
@@ -109,9 +130,11 @@ if __name__ == "__main__":
             rho0=rho0,
             frac_pc=frac_pc,
             lmbda_val=lmbda_val,
+            nu_val=nu_val,
             abs_threshold=abs_cut,
             tol_relative=rel_cut,
             merge_tol=merge_tol,
+            target=target_shooting,
             idx_sigma=2,
         )
 
@@ -130,7 +153,17 @@ if __name__ == "__main__":
 
     # --- print diagnostics for accepted candidates
     s_maxes = print_candidate_info(
-        s0_list, rho0, r0, r_max, xi_val, lmbda_val, p_eqState, rho_eqState, frac_pc
+        s0_list,
+        rho0,
+        r0,
+        r_max,
+        xi_val,
+        lmbda_val,
+        nu_val,
+        p_eqState,
+        rho_eqState,
+        frac_pc,
+        target_shooting,
     )
     # align σ(r_max) with σ0 list (order-preserving)
     smax_by_s0 = {s: sm for s, sm in zip(s0_list, s_maxes)}
@@ -154,6 +187,7 @@ if __name__ == "__main__":
             r_max,
             xi_val,
             lmbda_val,
+            nu_val,
             rho0,
             frac_pc,
             stop_at_2r=True,
@@ -204,6 +238,7 @@ if __name__ == "__main__":
             r_max,
             xi_val,
             lmbda_val,
+            nu_val,
             rho0,
             frac_pc,
             stop_at_2r=True,
@@ -220,6 +255,7 @@ if __name__ == "__main__":
             r_max,
             xi_val,
             lmbda_val,
+            nu_val,
             rho0,
             frac_pc,
             stop_at_2r=False,
@@ -227,7 +263,7 @@ if __name__ == "__main__":
         )
 
         ADM_mass = adm_mass_from_sol(sol_bnd, k_tail=15)
-        scalar_charge = scal_charge_from_sol(sol_bnd, lmbda_val, r_max)
+        scalar_charge = scal_charge_from_sol(sol_bnd, lmbda_val, nu_val, r_max)
 
         custom_print(f"\nResults for n={n} mode", style="bold")
         print("ADM mass / M_sun = ", f"{ADM_mass/SM:.2e}")
@@ -263,4 +299,4 @@ if __name__ == "__main__":
     custom_print(f"\nExecution time: {t_tot:.0f} s", style="dim")
 
     # --- 5) Plots
-    printResults_multi(plot_entries, xi_val, lmbda_val, star_weight)
+    printResults_multi(plot_entries, xi_val, lmbda_val, nu_val, star_weight)

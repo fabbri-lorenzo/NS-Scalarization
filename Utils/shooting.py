@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import fsolve
 
-from Utils.TOV_EMG import _sigma2_psi2
+from Utils.TOV import _sigma2_psi2
 from Utils.params import c
 
 
@@ -14,6 +14,7 @@ def _sigma_rmax(
     r_max,
     xi,
     lmbda,
+    nu,
     rho0,
     frac_pc,
     idx_sigma=2,
@@ -33,12 +34,24 @@ def _sigma_rmax(
         r_max,
         xi,
         lmbda,
+        nu,
         rho0,
         frac_pc,
         stop_at_2r=False,
         record_mu2=False,
     )
     return float(sol.y[idx_sigma, -1])
+
+
+def _delta_to_target(val, target):
+    if np.isscalar(target):
+        return float(val) - float(target)
+    try:
+        arr = np.asarray(list(target), dtype=float)
+        j = int(np.nanargmin(np.abs(arr - val)))
+        return float(val) - float(arr[j])
+    except Exception:
+        return float(val) - float(target)
 
 
 def _residual(
@@ -50,13 +63,12 @@ def _residual(
     r_max,
     xi,
     lmbda,
+    nu,
     rho0,
     frac_pc,
+    target,  # can be a scalar or an iterable of scalars
     idx_sigma=2,
 ):
-    """Wrapper around ``_sigma_rmax`` that guards against exceptions and
-    non‑finite results.  Returns a large value on failure.
-    """
     try:
         val = _sigma_rmax(
             s0,
@@ -67,13 +79,14 @@ def _residual(
             r_max,
             xi,
             lmbda,
+            nu,
             rho0,
             frac_pc,
             idx_sigma,
         )
         if not np.isfinite(val):
             return 1e300
-        return val
+        return _delta_to_target(val, target)
     except Exception:
         return 1e300
 
@@ -113,7 +126,9 @@ def shoot_sigma0(
     bracket,  # (a, b) in SAME UNITS as σ0
     rho0,  # for Ψ2 check
     frac_pc,
+    target,
     lmbda,
+    nu,
     abs_threshold=1e-10,
     tol_relative=1e-2,
     n_seeds=41,
@@ -124,7 +139,7 @@ def shoot_sigma0(
 ):
     """
     Shoot for central scalar amplitudes ``σ0`` such that the scalar field at
-    ``r_max`` vanishes. Returns a list of acceptable roots. A root is accepted
+    ``r_max`` hits target. Returns a list of acceptable roots. A root is accepted
     if it satisfies the absolute residual cut OR (failing that) the relaxed
     relative cut. Roots with Ψ2<=0 are rejected for regularity.
     """
@@ -149,9 +164,11 @@ def shoot_sigma0(
                 r_max,
                 xi,
                 lmbda,
+                nu,
                 rho0,
                 frac_pc,
-                idx_sigma,
+                target=target,  # accepts scalar or iterable
+                idx_sigma=idx_sigma,
             )
         )
     F_uniform = np.array(F_uniform, float)
@@ -176,9 +193,11 @@ def shoot_sigma0(
                     r_max,
                     xi,
                     lmbda,
+                    nu,
                     rho0,
                     frac_pc,
-                    idx_sigma,
+                    target=target,
+                    idx_sigma=idx_sigma,
                 )
                 / sigma_scale
             ]
@@ -204,9 +223,11 @@ def shoot_sigma0(
                 r_max,
                 xi,
                 lmbda,
+                nu,
                 rho0,
                 frac_pc,
-                idx_sigma,
+                target=target,
+                idx_sigma=idx_sigma,
             )
             if not np.isfinite(fr):
                 continue
@@ -237,9 +258,11 @@ def shoot_sigma0(
             r_max,
             xi,
             lmbda,
+            nu,
             rho0,
             frac_pc,
-            idx_sigma,
+            target=target,
+            idx_sigma=idx_sigma,
         )
         evals.append((r, fr))
         if abs(fr) <= abs_threshold or (r != 0.0 and abs(fr / r) <= tol_relative):
@@ -248,7 +271,7 @@ def shoot_sigma0(
     # Ψ2>0 regularity check
     final = []
     for r in chosen:
-        _, psi2 = _sigma2_psi2(r, p0, eps0, xi, lmbda)
+        _, psi2 = _sigma2_psi2(r, p0, eps0, xi, lmbda, nu)
         if np.isfinite(psi2) and (psi2 > 0.0):
             final.append(r)
 

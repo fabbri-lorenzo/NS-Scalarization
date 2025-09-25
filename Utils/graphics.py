@@ -1,20 +1,28 @@
 import os
 import matplotlib.pyplot as plt
 import numpy as np
-from Utils.params import c, G_N, M, SM
+from Utils.params import M
 
 
 R_star_color = 'c'
 dpi_val = 600
 
 
-def printResults_multi(entries, xi, lmbda, star_weight):
+def nu_line(nu):
+    if nu == 0:
+        return
+    else:
+        plt.axhline(y=nu, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
+        plt.axhline(y=-nu, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
+
+
+def printResults_multi(entries, xi, lmbda, nu, star_weight):
     """
     entries: list of dicts with keys
       ['label','sol','r_star','r_mu','mu2']
     Makes one figure per quantity, overlaying curves for each entry.
     """
-    savepath = f"Results_lmbda={lmbda:.0e}/Results_{star_weight}_xi={xi:.0f}/"
+    savepath = f"Results/lmbda={lmbda:.0e}_nu={nu:.0e}/{star_weight}_xi={xi:.0f}/"
     os.makedirs(savepath, exist_ok=True)
 
     # style cycle (extend if you add more modes)
@@ -41,6 +49,7 @@ def printResults_multi(entries, xi, lmbda, star_weight):
         plt.plot(r_plot / 1e3, p_plot, **sty)
         star_radii.append(e["r_star"])
     avg_R_star = np.mean([r for r in star_radii if r is not None])
+    nu_line(nu)
     plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)')
@@ -79,7 +88,8 @@ def printResults_multi(entries, xi, lmbda, star_weight):
 
         sty = styles[i % len(styles)]
         plt.plot(r_plot, mu2_plot_km, label=rf"$\mu_{{\rm eff}}^2$ [{e['label']}]", **sty)
-
+    nu_line(nu)
+    plt.axhline(y=nu, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
     plt.axhline(0.0, color='black', linestyle='--', linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)'); plt.ylabel(r'$\mu_{\rm eff}^2$ (Km$^{-2}$)')
@@ -99,7 +109,7 @@ def printResults_multi(entries, xi, lmbda, star_weight):
         else:
             sigma_plot = np.interp(r_plot, sol.t, sol.y[2])
         plt.plot(r_plot/1e3, sigma_plot/M, label=f"σ/M_Pl [{e['label']}]", **sty)
-
+    nu_line(nu)
     plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel('r (Km)')
@@ -147,6 +157,7 @@ def printResults_multi(entries, xi, lmbda, star_weight):
     # plt.tight_layout()
     # plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)
     # plt.show()
+
 
 # --- Colored printing utility ---
 from colorama import Fore, Style, init
