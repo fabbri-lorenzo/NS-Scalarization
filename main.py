@@ -25,7 +25,7 @@ rho_eqState = rho_SLy4  # Choose the EOS
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 rho0 = rho0_lightS
-xi_val = 0.05
+xi_val = 10
 lmbda_val = 0.0
 # lmbda_val = 1 / M**2
 # lmbda_val = xi_val**2 * 1e-10 / 4.165
@@ -55,7 +55,7 @@ if __name__ == "__main__":
         sw = "Heavy"
 
     custom_print(
-        f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ν = {nu_val:.2e} | {sw} star.",
+        f"\nxi = {xi_val} | λ = {lmbda_val:.2e} | ν = {nu_val:.2e} | {sw} star",
         style="bold",
     )
 
@@ -144,9 +144,31 @@ if __name__ == "__main__":
             "[fallback] still empty; reporting |σ(r_max)| minima as hints:",
             color="yellow",
         )
-        for s, f in sorted(key=lambda t: abs(t[1]))[:6]:
+        # sort the coarse scan by absolute residual and inspect a few points
+        for s, f in sorted(zip(S, F), key=lambda t: abs(t[1]))[:6]:
+            try:
+                # compute sigma(r_max) directly for this σ₀
+                sol, _, _ = integrate_star(
+                    s,
+                    p_eqState,
+                    rho_eqState,
+                    r0,
+                    r_max,
+                    xi_val,
+                    lmbda_val,
+                    nu_val,
+                    rho0,
+                    frac_pc,
+                    stop_at_2r=False,
+                    record_mu2=False,
+                )
+                sigma_val = float(sol.y[2, -1])
+                sigma_abs = abs(sigma_val)
+            except Exception:
+                # fall back to absolute residual if integration fails
+                sigma_abs = abs(f)
             custom_print(
-                f"   near σ0/M≈{s/M:.3e}: |σ(r_max)|/M≈{abs(f)/M:.3e}",
+                f"   near σ0/M≈{s/M:.3e}: |σ(r_max)|/M≈{sigma_abs/M:.3e}",
                 color="yellow",
             )
         raise RuntimeError("No σ0 roots found; see diagnostics above.")
@@ -206,7 +228,57 @@ if __name__ == "__main__":
         )
 
     # --- 3) Select modes until we have as many solutions as sign-change brackets ---
-    sigma0_by_mode = {}  # maps node count n -> chosen sigma0
+    sigma0_by_mode = {}  # maps node count to list of chosen σ₀ values
+
+    for n in sorted(per_mode.keys()):
+        cands = per_mode.get(n, [])
+        if not cands:
+            custom_print(f"[MISS] No candidate with n={n} nodes.", color="red")
+            continue
+
+        if nu_val != 0.0:
+            nu_abs = abs(nu_val)
+            # handle both +ν and −ν vacua
+            for sign in (+1, -1):
+                group = []
+                for d in cands:
+                    # value of σ at r_max from the stored solution
+                    val = float(d["sol"].y[2, -1])
+                    # compare distances to +ν and −ν
+                    diff_plus = abs(val - nu_abs)
+                    diff_minus = abs(val + nu_abs)
+                    sign_val = +1 if (diff_plus <= diff_minus) else -1
+                    if sign_val == sign:
+                        # distance to the appropriate vacuum
+                        diff_to_vac = diff_plus if sign == +1 else diff_minus
+                        d_candidate = d.copy()
+                        d_candidate["vacuum_sign"] = sign
+                        d_candidate["sigma_rmax"] = val
+                        d_candidate["diff_to_vac"] = diff_to_vac
+                        group.append(d_candidate)
+                if group:
+                    # choose the candidate closest to its vacuum
+                    pick = min(group, key=lambda d: d["diff_to_vac"])
+                    sigma0_by_mode.setdefault(n, []).append(pick["s0"])
+                    vac_label = "+" if sign == +1 else "-"
+                    custom_print(
+                        f"[OK] n={n}, vacuum={vac_label}ν: σ₀ = {pick['s0']/M:.4e} M_Pl",
+                        color="cyan",
+                    )
+        else:
+            # ν=0: single vacuum at zero; choose the smallest residual
+            pick = min(cands, key=lambda d: abs(d["smax"]))
+            sigma0_by_mode.setdefault(n, []).append(pick["s0"])
+            custom_print(f"[OK] n={n}: σ₀ = {pick['s0']/M:.4e} M_Pl", color="cyan")
+
+        # flatten the chosen (n, σ₀) pairs for further integration
+    selected_pairs = [(n, s0) for n, s_list in sigma0_by_mode.items() for s0 in s_list]
+    if not selected_pairs:
+        custom_print(
+            "[WARN] No σ₀ solutions selected. Consider widening the bracket or relaxing thresholds.",
+            color="yellow",
+        )
+
     n = 0
     while len(sigma0_by_mode) < target_solutions:
         cands = per_mode.get(n, [])
@@ -229,7 +301,7 @@ if __name__ == "__main__":
 
     # --- 4) Final integrate (again) for selected modes for plotting + diagnostics ---
     plot_entries = []
-    for n, s0 in list(sigma0_by_mode.items()):
+    for n, s0 in selected_pairs:
         sol, mu2_log, R_star_m = integrate_star(
             s0,
             p_eqState,
@@ -244,6 +316,7 @@ if __name__ == "__main__":
             stop_at_2r=True,
             record_mu2=True,
         )
+
         r_star_km = (R_star_m/1e3) if (R_star_m is not None) else np.nan
 
         # Background leg for ADM mass & scalar charge
