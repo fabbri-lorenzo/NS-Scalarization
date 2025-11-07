@@ -7,22 +7,33 @@ from Utils.params import M
 R_star_color = 'c'
 dpi_val = 600
 
+root_colors = [
+    "#f4828f",
+    "#9305FF",
+    "#1e988a",
+]
 
-def nu_line(nu):
+
+def nu_line(nu, vacuum_sols):
     if nu == 0:
-        return
+        plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     else:
-        plt.axhline(y=nu, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-        plt.axhline(y=-nu, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
+        if vacuum_sols["+"] > 0:
+            plt.axhline(
+                y=nu / M, color="magenta", linestyle="--", linewidth=1.0, alpha=0.6
+            )
+        if vacuum_sols["-"] > 0:
+            plt.axhline(
+                y=-nu / M, color="magenta", linestyle="--", linewidth=1.0, alpha=0.6
+            )
 
 
-def printResults_multi(entries, xi, lmbda, nu, star_weight):
+def plotResults_multi(entries, nu, vacuum_sols, savepath):
     """
     entries: list of dicts with keys
       ['label','sol','r_star','r_mu','mu2']
     Makes one figure per quantity, overlaying curves for each entry.
     """
-    savepath = f"Results/lmbda={lmbda:.0e}_nu={nu:.0e}/{star_weight}_xi={xi:.0f}/"
     os.makedirs(savepath, exist_ok=True)
 
     # style cycle (extend if you add more modes)
@@ -46,16 +57,24 @@ def printResults_multi(entries, xi, lmbda, nu, star_weight):
             p_plot = y_plot[0]
         else:
             p_plot = np.interp(r_plot, sol.t, sol.y[0])
-        plt.plot(r_plot / 1e3, p_plot, **sty)
+        plt.plot(r_plot / 1e3, p_plot, label=rf"P [{e['label']}]", **sty)
         star_radii.append(e["r_star"])
+
     avg_R_star = np.mean([r for r in star_radii if r is not None])
-    nu_line(nu)
-    plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
+    plt.axvline(
+        x=avg_R_star,
+        color=R_star_color,
+        linestyle="--",
+        alpha=0.75,
+        label="Star radius",
+    )
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    plt.xlabel('r (Km)')
+    plt.xlabel("r [Km]")
+    plt.xlim(left=0)
     plt.ylabel("P (Pa)")
-    plt.grid(True)
-    plt.title("Pressure profile")
+    plt.grid(False)
+    plt.legend()
+    plt.title("Pressure")
     plt.tight_layout()
     plt.savefig(savepath + "pressure.png", dpi=dpi_val)
     plt.show()
@@ -87,14 +106,38 @@ def printResults_multi(entries, xi, lmbda, nu, star_weight):
         mu2_plot_km = np.interp(r_plot, r_mu_km, mu2_m) * 1e6
 
         sty = styles[i % len(styles)]
-        plt.plot(r_plot, mu2_plot_km, label=rf"$\mu_{{\rm eff}}^2$ [{e['label']}]", **sty)
-    nu_line(nu)
-    plt.axhline(y=nu, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
+        # extract mode number from label
+        try:
+            n_val = int(e["label"].split("=")[1])
+        except Exception:
+            n_val = 0
+
+        if n_val > 4:
+            color = "#1f77b4"
+        else:
+            color = root_colors[n_val % len(root_colors)]
+
+        plt.plot(
+            r_plot,
+            mu2_plot_km,
+            color=color,
+            label=rf"$\mu_{{\rm eff}}^2$ [{e['label']}]",
+            **sty,
+        )
+    plt.axvline(
+        x=avg_R_star,
+        color=R_star_color,
+        linestyle="--",
+        alpha=0.75,
+        label="Star radius",
+    )
     plt.axhline(0.0, color='black', linestyle='--', linewidth=1.0, alpha=0.6)
-    plt.xlabel('r (Km)'); plt.ylabel(r'$\mu_{\rm eff}^2$ (Km$^{-2}$)')
-    plt.title('Effective Mass Squared Profile')
-    plt.grid(True); plt.legend()
+    plt.xlabel("r [Km]")
+    plt.ylabel(r"$\mu_{\rm eff}^2$ (Km$^{-2}$)")
+    plt.xlim(left=0)
+    plt.title("Effective mass squared")
+    plt.grid(False)
+    plt.legend()
     plt.tight_layout()
     plt.savefig(savepath + "mu2.png", dpi=dpi_val, bbox_inches="tight")
     plt.show()
@@ -108,15 +151,40 @@ def printResults_multi(entries, xi, lmbda, nu, star_weight):
             sigma_plot = sol.sol(r_plot)[2]
         else:
             sigma_plot = np.interp(r_plot, sol.t, sol.y[2])
-        plt.plot(r_plot/1e3, sigma_plot/M, label=f"σ/M_Pl [{e['label']}]", **sty)
-    nu_line(nu)
-    plt.axvline(x=avg_R_star, color=R_star_color, linestyle="--", alpha=0.25)
-    plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    plt.xlabel('r (Km)')
-    plt.legend(); plt.grid(True)
-    plt.title("Scalar field σ(r)")
+
+        # extract mode number from label
+        try:
+            n_val = int(e["label"].split("=")[1])
+        except Exception:
+            n_val = 0
+
+        if n_val > 4:
+            color = "#1f77b4"
+        else:
+            color = root_colors[n_val % len(root_colors)]
+
+        plt.plot(
+            r_plot / 1e3,
+            sigma_plot / M,
+            color=color,
+            label=rf"$\sigma/M_{{Pl}}$ [{e['label']}]",
+            **sty,
+        )
+    nu_line(nu, vacuum_sols)
+    plt.axvline(
+        x=avg_R_star,
+        color=R_star_color,
+        linestyle="--",
+        alpha=0.75,
+        label="Star radius",
+    )
+    plt.xlabel("r [Km]")
+    plt.xlim(left=0)
+    plt.legend()
+    plt.grid(False)
+    plt.title("Scalar field")
     plt.tight_layout()
-    plt.savefig(savepath + "sigma_profile.png", dpi=dpi_val)
+    plt.savefig(savepath + "sigma.png", dpi=dpi_val)
     plt.show()
 
     ## --- Normalized scalar field ---
@@ -151,8 +219,8 @@ def printResults_multi(entries, xi, lmbda, nu, star_weight):
     # )
     #
     #
-    # plt.xlabel('r (Km)')
-    # plt.legend(); plt.grid(True)
+    # plt.xlabel('r [Km]')
+    # plt.legend(); plt.grid(False)
     # plt.title('Scalar field σ(r)')
     # plt.tight_layout()
     # plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)

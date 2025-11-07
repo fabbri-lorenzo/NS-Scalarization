@@ -1,0 +1,71 @@
+%% Minimal, compact, color-coded overview
+%%{init:{
+  "theme":"default",
+  "flowchart":{
+    "defaultRenderer":"elk",
+    "nodeSpacing":18,                   // horizontal spacing between siblings
+    "rankSpacing":5,                    // vertical spacing between layers
+    "elk":{
+      "defaultLayoutOptions":{
+        "elk.direction":"DOWN",         // main flow top→bottom
+        "elk.algorithm":"layered",
+        "spacing.nodeNodeBetweenLayers":12,  // smaller vertical gap between levels
+        "spacing.nodeNode":24,               // horizontal spacing between siblings
+        "nodePlacement.strategy":"NETWORK_SIMPLEX",
+        "elk.layered.spacing.nodeNodeBetweenLayers":16,
+        "elk.layered.spacing.baseValue":12,
+        "elk.aspectRatio":"2.0",        // try 1.5–2.0 to stretch horizontally
+        "elk.edgeRouting":"ORTHOGONAL"  // optional: neater horizontal edges
+      }
+    }
+  }
+}}%%
+graph TD
+
+  %% ========== SETUP ==========
+  B["Set params:<br/>EOS, ρ₀, ξ, λ, ν, method,<br/>bracket [a,b], thresholds"]:::setup
+
+  %% ========== DIAGNOSTIC SCAN ==========
+  B --> F["diagnostic_scan()<br/>→ residual samples"]:::scan
+  F --> G{sign-change<br/>brackets?}:::decision
+  G -->|yes| I["probe_brackets()<br/>find roots in [a,b]"]:::shoot
+  G -->|no| G0["No scalarization → exit"]:::warn
+
+
+  %% ========== ROOT FINDING (SHOOT) ==========
+  I --> J{roots found?}:::decision
+  J -->|no| J0["Runtime Error"]:::error
+  J -->|yes| K["Map σ₀ → σ(r_max)"]:::shoot
+
+  %% ========== MODE DISCOVERY  &  SELECT PER MODE ==========
+  subgraph RIGHT["SELECT PHYSICAL ROOTS"]
+  end
+  subgraph LEFT["ASSIGN VACUUM VALUE"]
+  end
+  K --> RIGHT 
+
+  RIGHT --> LEFT
+  
+  %% ========== FINAL RUN & OUTPUT ==========
+  subgraph FINAL[" "]
+    direction LR
+      U["Integrate full star"]:::integ
+      U ---> V["Compute M and Q"]:::output
+      V ---> W["Write data and plot"]:::output
+  end
+  LEFT --> T{"for each (n, σ₀)"}:::loop
+  T --> FINAL 
+  
+
+  %% ============ STYLES ============
+  classDef setup    fill:#c9f7c9,stroke:#2a8,stroke-width:1px;
+  classDef scan     fill:#cfe5ff,stroke:#248,stroke-width:1px;
+  classDef shoot    fill:#ffe0b3,stroke:#c66,stroke-width:1px;
+  classDef integ    fill:#e8d9ff,stroke:#62c,stroke-width:1px;
+  classDef output   fill:#fff7b3,stroke:#aa3,stroke-width:1px;
+  classDef decision fill:#ffffff,stroke:#333,stroke-width:2px;
+  classDef loop     fill:#fafafa,stroke:#555,stroke-dasharray:4 2;
+  classDef warn     fill:#ffe9e9,stroke:#c33,stroke-width:1px;
+  classDef error    fill:#ffcccc,stroke:#a00,stroke-width:2px;
+  classDef spacer fill:transparent,stroke:transparent;
+  classDef invis fill:none,stroke:none;

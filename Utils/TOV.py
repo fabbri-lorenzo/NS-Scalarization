@@ -1,19 +1,20 @@
 from Utils.params import c, M2
 import numpy as np
+import warnings
+
+warnings.filterwarnings("error", category=RuntimeWarning)
+np.seterr(over="raise", divide="raise", invalid="raise")
 
 
 # === INITIAL CONDITIONS EMG (SI) — regular O(r^2) center expansion ===
-def _sigma2_psi2(sigma0, p0, eps0, xi, lmbda,nu):
+def _sigma2_psi2(sigma0, p0, eps0, xi, lmbda, nu):
     # Denominator in the σ₂ expression; can vanish for large |xi| or σ₀
     denom_sigma = 6 * (M2 + xi * sigma0**2 + 6 * xi**2 * sigma0**2)
-    # if (not np.isfinite(denom_sigma)) or (abs(denom_sigma) < 1e-30):
-    # Return NaNs so the integrator can treat this initial guess as invalid
-    #    return float("nan"), float("nan")
+
     sigma2 = (M2 * lmbda * sigma0**3 - xi * sigma0 * (eps0 - 3 * p0 +lmbda*nu**4 -2*lmbda*nu**2*sigma0**2)) / denom_sigma
 
     denom_Psi = 6 * (M2 + xi * sigma0**2)
-    # if (not np.isfinite(denom_Psi)) or (abs(denom_Psi) < 1e-30):
-    #    return float("nan"), float("nan")
+
     Psi2 = (12 * xi * sigma0 * sigma2 + eps0 + 0.25 * lmbda * sigma0**4 + 0.25 * lmbda *nu**4-0.5*lmbda*nu**2*sigma0**2) / denom_Psi
     return sigma2, Psi2
 
@@ -56,94 +57,107 @@ def dV_dsigma(sigma, lmbda,nu):
 def make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, nu, mu2_recorder=None):
 
     def tov_system(r, y):
-        p, Psi, sigma, dsigma = y
+        try:
+            p, Psi, sigma, dsigma = y
 
-        if p < p_c * frac_pc:
-            p = 0.0
-            eps = 0.0
-        else:
-            rho = rho_eqState(p)
-            eps = rho * c * c
+            if p < p_c * frac_pc:
+                p = 0.0
+                eps = 0.0
+            else:
+                rho = rho_eqState(p)
+                eps = rho * c * c
 
-        F_val = F(sigma, xi)
-        F_prime = dF_dsigma(sigma, xi) * dsigma
-        # safe metric factor: clamp exponent to [-700, 700]
-        exponent = np.clip(2.0 * Psi, -700.0, 700.0)
-        g11 = np.exp(exponent)
+            F_val = F(sigma, xi)
+            F_prime = dF_dsigma(sigma, xi) * dsigma
 
-        # dΦ/dr
-        denom_dPhi = 2 * F_val + r * F_prime
-        # if (not np.isfinite(denom_dPhi)) or (abs(denom_dPhi) < 1e-30):
-        #    return [np.inf, np.inf, np.inf, np.inf]
+            exponent = 2.0 * Psi
+            with np.errstate(over="ignore", invalid="ignore"):
+                g11 = np.exp(np.clip(exponent, None, 700))
+            if g11 == np.exp(700):
+                # make the solver back out via NaNs (or raise to terminate cleanly)
+                return [np.nan, np.nan, np.nan, np.nan]
 
-        dPhi = (1 / denom_dPhi) * (
-            F_val * (g11 - 1) / r
-            + 0.5 * r * dsigma**2
-            + (p - V(sigma, lmbda, nu)) * r * g11
-            - 2 * F_prime
-        )
+            # dΦ/dr
+            denom_dPhi = 2 * F_val + r * F_prime
 
-        # Definition of Ψ̄ for convenience
-        denom_Psi_bar = r * denom_dPhi
-        Psi_bar = (1 / denom_Psi_bar) * (
-            (1 - g11) * F_val
-            + r**2
-            * (
-                2 * xi * ((dPhi + 2 / r) * sigma * dsigma + dsigma**2)
-                + g11 * (eps + V(sigma, lmbda, nu))
-                + (dsigma**2) / 2
+            dPhi = (1 / denom_dPhi) * (
+                F_val * (g11 - 1) / r
+                + 0.5 * r * dsigma**2
+                + (p - V(sigma, lmbda, nu)) * r * g11
+                - 2 * F_prime
             )
-        )
 
-        # d²σ/dr²
-        denom_ddsigma = 2 * F_val * (F_val + 6 * xi**2 * sigma**2)
-        # if (not np.isfinite(denom_ddsigma)) or (abs(denom_ddsigma) < 1e-30):
-        #    return [np.inf, np.inf, np.inf, np.inf]
-
-        dd_sigma = (
-            (2 * F_val + r * F_prime)
-            / denom_ddsigma
-            * (
-                F_val
+            # Definition of Ψ̄ for convenience
+            denom_Psi_bar = r * denom_dPhi
+            Psi_bar = (1 / denom_Psi_bar) * (
+                (1 - g11) * F_val
+                + r**2
                 * (
-                    g11 * dV_dsigma(sigma, lmbda, nu)
-                    - dPhi * dsigma
-                    - 2 * dsigma / r
-                    + Psi_bar * dsigma
-                )
-                - xi
-                * sigma
-                * (
-                    dsigma**2
-                    + g11 * (4 * (V(sigma, lmbda, nu)) + eps - 3 * p)
-                    + 6 * xi * ((dPhi - Psi_bar + 2 / r) * sigma * dsigma + dsigma**2)
+                    2 * xi * ((dPhi + 2 / r) * sigma * dsigma + dsigma**2)
+                    + g11 * (eps + V(sigma, lmbda, nu))
+                    + (dsigma**2) / 2
                 )
             )
-        )
 
-        # dΨ/dr
-        denom_dPsi = denom_dPhi
-        dPsi = Psi_bar + (2 * r * xi) * sigma * dd_sigma / denom_dPsi
+            # d²σ/dr²
+            denom_ddsigma = 2 * F_val * (F_val + 6 * xi**2 * sigma**2)
 
-        # dp/dr
-        dp = -(eps + p) * dPhi
+            dd_sigma = (
+                (2 * F_val + r * F_prime)
+                / denom_ddsigma
+                * (
+                    F_val
+                    * (
+                        g11 * dV_dsigma(sigma, lmbda, nu)
+                        - dPhi * dsigma
+                        - 2 * dsigma / r
+                        + Psi_bar * dsigma
+                    )
+                    - xi
+                    * sigma
+                    * (
+                        dsigma**2
+                        + g11 * (4 * (V(sigma, lmbda, nu)) + eps - 3 * p)
+                        + 6
+                        * xi
+                        * ((dPhi - Psi_bar + 2 / r) * sigma * dsigma + dsigma**2)
+                    )
+                )
+            )
 
-        # effective mass squared
-        mu2 = -(xi / F_val) * (
-            1 / g11 * dsigma**2
-            + 4 * V(sigma, lmbda, nu)
-            + eps
-            - 3 * p
-            + 6
-            * xi
-            / g11
-            * ((dPhi - dPsi + 2 / r) * sigma * dsigma + dsigma**2 + sigma * dd_sigma)
-        )
-        if mu2_recorder is not None:
-            # store (r, μ²) without touching solver tolerances/state
-            mu2_recorder((r, mu2))
+            # dΨ/dr
+            denom_dPsi = denom_dPhi
+            dPsi = Psi_bar + (2 * r * xi) * sigma * dd_sigma / denom_dPsi
 
-        return [dp, dPsi, dsigma, dd_sigma]
+            # dp/dr
+            dp = -(eps + p) * dPhi
+
+            # effective mass squared
+            mu2 = (
+                -(xi / F_val)
+                * (
+                    (1 / g11) * dsigma**2
+                    + 4 * V(sigma, lmbda, nu)
+                    + eps
+                    - 3 * p
+                    + 6
+                    * xi
+                    / g11
+                    * (
+                        (dPhi - dPsi + 2 / r) * sigma * dsigma
+                        + dsigma**2
+                        + sigma * dd_sigma
+                    )
+                )
+                - lmbda * nu**2
+            )
+            if mu2_recorder is not None:
+                # store (r, μ²) without touching solver tolerances/state
+                mu2_recorder((r, mu2))
+
+            return [dp, dPsi, dsigma, dd_sigma]
+        except (FloatingPointError, RuntimeWarning) as err:
+            return [np.nan, np.nan, np.nan, np.nan]
     return tov_system  
 
 
@@ -176,22 +190,8 @@ class StoppingConditions:
 
     # Terminate when dynamics become singular/unsafe (prevents stalls)
     def blowup_guard(self, xi):
-        # thresholds: small denominators & very large |Psi|
-        DEN_TOL = 1e-30
-        PSI_MAX = 350.0  # well within exp() clamp; avoids pathological regimes
-
         def _ev(r, y):
-            _, Psi, sigma, dsigma = y
-            # recompute small-denominator conditions cheaply
-            F_val = M2 + xi * sigma**2
-            F_prime = 2.0 * xi * sigma * dsigma
-
-            denom1 = abs(2.0 * F_val + r * F_prime)
-            denom2 = abs(2.0 * F_val * (F_val + 6.0 * xi**2 * sigma**2))
-
-            # event root when min(...) hits zero
-            return min(denom1 - DEN_TOL, denom2 - DEN_TOL, PSI_MAX - abs(Psi))
-
+            return 1.0 if np.all(np.isfinite(y)) else 0.0  # 0 → stop
         _ev.terminal = True
         _ev.direction = -1
         return _ev

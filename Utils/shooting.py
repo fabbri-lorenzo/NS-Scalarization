@@ -1,32 +1,30 @@
 import numpy as np
-from scipy.optimize import fsolve
-
+from Utils.params import c, M
 from Utils.TOV import _sigma2_psi2
-from Utils.params import c
+from Utils.analysis import integrate_star
+from Utils.graphics import custom_print
+from scipy.optimize import brentq
 
 
-def _sigma_rmax(
+def sigma_residual(
     s0,
-    integrate_fn,
-    p_eqState,
-    rho_eqState,
     r0,
     r_max,
+    p_eqState,
+    rho_eqState,
     xi,
     lmbda,
     nu,
     rho0,
     frac_pc,
+    method,
     idx_sigma=2,
+    target=0.0,
+    *,
+    return_details=False,
 ):
-    """
-    Integrate the system with central scalar amplitude ``s0`` and return the value
-    of the scalar field at the outer boundary ``r_max``.  The index ``idx_sigma``
-    selects which component of the solution vector corresponds to the scalar
-    field.  If the integration fails or returns non‑finite values, a large
-    number is returned so that the root‐finding routines can ignore it.
-    """
-    sol, _, _ = integrate_fn(
+    """Return residual σ(r_max)−t*, optionally with (sigma_end, t*)."""
+    sol, _, _ = integrate_star(
         s0,
         p_eqState,
         rho_eqState,
@@ -37,242 +35,292 @@ def _sigma_rmax(
         nu,
         rho0,
         frac_pc,
+        method=method,
         stop_at_2r=False,
         record_mu2=False,
     )
-    return float(sol.y[idx_sigma, -1])
+    val = float(sol.y[idx_sigma, -1])
+    t_eff = _nearest_target_value(val, target)
+    delta = val - t_eff
+    return (delta, val, t_eff) if return_details else delta
 
 
-def _delta_to_target(val, target):
-    if np.isscalar(target):
-        return float(val) - float(target)
-    try:
-        arr = np.asarray(list(target), dtype=float)
-        j = int(np.nanargmin(np.abs(arr - val)))
-        return float(val) - float(arr[j])
-    except Exception:
-        return float(val) - float(target)
-
-
-def _residual(
-    s0,
-    integrate_fn,
-    p_eqState,
-    rho_eqState,
+def diagnostic_scan(
     r0,
     r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    lmbda,
+    nu_val,
+    rho0,
+    frac_pc,
+    method,
+    a,
+    b,
+    n=201,
+    target=0.0,
+):
+    S = np.linspace(a, b, int(n))
+    F = []
+    for s in S:
+        try:
+            F.append(
+                sigma_residual(
+                    float(s),
+                    r0,
+                    r_max,
+                    p_eqState,
+                    rho_eqState,
+                    xi,
+                    lmbda,
+                    nu_val,
+                    rho0,
+                    frac_pc,
+                    method,
+                    idx_sigma=2,
+                    target=target,
+                )
+            )
+        except Exception:
+            F.append(np.nan)
+    F = np.asarray(F, float)
+    brackets = []
+    for i in range(len(S) - 1):
+        f1, f2 = F[i], F[i + 1]
+        if (
+            np.isfinite(f1)
+            and np.isfinite(f2)
+            and (f1 == 0 or f2 == 0 or (f1 * f2 < 0))
+        ):
+            brackets.append((S[i], S[i + 1]))
+    return F, brackets
+
+
+def find_root_brent(
+    u,
+    v,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
     xi,
     lmbda,
     nu,
     rho0,
     frac_pc,
-    target,  # can be a scalar or an iterable of scalars
-    idx_sigma=2,
+    method,
+    idx_sigma: int = 2,
+    rtol: float = 1e-12,
+    maxiter: int = 200,
+    target=0.0,
 ):
-    try:
-        val = _sigma_rmax(
+    def f(s0):
+        return sigma_residual(
             s0,
-            integrate_fn,
-            p_eqState,
-            rho_eqState,
             r0,
             r_max,
+            p_eqState,
+            rho_eqState,
             xi,
             lmbda,
             nu,
             rho0,
             frac_pc,
-            idx_sigma,
+            method=method,
+            idx_sigma=idx_sigma,
+            target=target,
         )
-        if not np.isfinite(val):
-            return 1e300
-        return _delta_to_target(val, target)
+
+    try:
+        s_star = brentq(f, float(u), float(v), rtol=rtol, maxiter=maxiter)
+        # one more eval to get (sigma_end, t_eff) without a second integrate later
+        delta, sigma_end, t_eff = sigma_residual(
+            s_star,
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi,
+            lmbda,
+            nu,
+            rho0,
+            frac_pc,
+            method=method,
+            idx_sigma=idx_sigma,
+            target=target,
+            return_details=True,
+        )
+        return float(s_star), float(delta), float(sigma_end), float(t_eff)
     except Exception:
-        return 1e300
+        return None, None, None, None
 
 
-def _unique_sorted(vals, tol=1e-8):
-    """Given a list of floats, return a sorted list with near‑duplicates merged."""
-    if not vals:
-        return []
-    vals = sorted(vals)
-    out = [vals[0]]
-    for v in vals[1:]:
-        if abs(v - out[-1]) > tol * max(1.0, abs(v), abs(out[-1])):
-            out.append(v)
-    return out
+def residual_accept(sigma_rmax, sigma0, target, abs_threshold, tol_relative):
+    """
+    Check whether the residual at r_max is acceptable given the target.
+
+    - If target == 0: use |σ(r_max)| / |σ0| < tol_relative
+    - If target != 0: use |σ(r_max) - target| / |target| < tol_relative
+    Absolute threshold always applies first.
+    """
+    # absolute check
+    if abs(sigma_rmax - target) <= abs_threshold:
+        return True, "abs"
+
+    # relative check
+    if target == 0.0:
+        if sigma0 != 0.0 and abs(sigma_rmax) / abs(sigma0) <= tol_relative:
+            return True, "rel"
+    else:
+        if abs((sigma_rmax - target) / target) <= tol_relative:
+            return True, "rel"
+
+    return False, None
 
 
-def _x_to_s(x, a, b):
-    """Map x∈ℝ to s∈(a,b) using tanh.  This avoids exponent overflow."""
-    t = np.tanh(x)
-    return 0.5 * (a + b) + 0.5 * (b - a) * t
+def _nearest_target_value(sigma_rmax, target):
+    """Return the scalar target t* in `target` closest to sigma_rmax."""
+    try:
+        return float(target)  # scalar target
+    except (TypeError, ValueError):
+        arr = np.asarray(target, dtype=float)
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            raise ValueError("target list must be non-empty and finite")
+        idx = np.nanargmin(np.abs(arr - sigma_rmax))
+        return float(arr[idx])
 
 
-def _s_to_x(s, a, b):
-    """Inverse map s∈(a,b) to x∈ℝ via atanh; clip the argument to avoid ±1."""
-    t = (2.0 * (s - 0.5 * (a + b))) / (b - a)
-    t = np.clip(t, -1.0 + 1e-15, 1.0 - 1e-15)
-    return np.arctanh(t)
-
-
-def shoot_sigma0(
-    integrate_fn,
-    p_eqState,
-    rho_eqState,
+def probe_brackets(
+    brackets,
     r0,
     r_max,
-    xi,
-    bracket,  # (a, b) in SAME UNITS as σ0
-    rho0,  # for Ψ2 check
+    p_eqState,
+    rho_eqState,
+    xi_val,
+    rho0,
     frac_pc,
-    target,
-    lmbda,
-    nu,
-    abs_threshold=1e-10,
-    tol_relative=1e-2,
-    n_seeds=41,
-    sigma0_min_abs=0.0,
-    xtol=1e-12,
-    idx_sigma=2,
-    merge_tol=1e-8,
+    method,
+    lmbda_val,
+    nu_val,
+    abs_threshold,
+    tol_relative,
+    merge_tol,
+    target=0.0,
+    idx_sigma: int = 2,
 ):
     """
-    Shoot for central scalar amplitudes ``σ0`` such that the scalar field at
-    ``r_max`` hits target. Returns a list of acceptable roots. A root is accepted
-    if it satisfies the absolute residual cut OR (failing that) the relaxed
-    relative cut. Roots with Ψ2<=0 are rejected for regularity.
-    """
-    a, b = map(float, bracket)
-    if not (np.isfinite(a) and np.isfinite(b) and a < b):
-        raise ValueError("Invalid bracket")
+    Probe each sign-change bracket using Brent’s method to recover missing σ0 roots.
 
+    Parameters
+    ----------
+    brackets : list of tuple
+        List of (u, v) pairs where σ(r_max) changes sign.
+    existing_s0_list : iterable
+        List of σ0 values already found by the shooting method.
+    r0, r_max : float
+        Integration bounds.
+    p_eqState, rho_eqState : callable
+        Equation of state functions.
+    xi_val, rho0, frac_pc, lmbda_val : float
+        Model parameters.
+    abs_threshold : float
+        Absolute residual tolerance for accepting roots.
+    tol_relative : float
+        Relative residual tolerance for accepting roots.
+    merge_tol : float
+        Tolerance for merging near-duplicate solutions.
+    idx_sigma : int, optional
+        Index of the scalar field component in the solution vector.
+
+    Returns
+    -------
+    list
+        Sorted list of σ0 roots.
+
+    Notes
+    -----
+    This helper prints diagnostic messages indicating whether a bracketed root
+    was accepted or rejected and why. Acceptance requires that the residual at
+    r_max passes either the absolute or relative tolerance, and that the Ψ2
+    coefficient of the central metric expansion is positive.
+    """
+
+    candidates = []
+    s_maxes = []
+
+    # Precompute central quantities for the Ψ2 check
     p0 = float(p_eqState(rho0))
     eps0 = float(rho0 * c * c)
 
-    # Uniform seeds across [a,b]
-    S_uniform = np.linspace(a, b, int(n_seeds))
-    F_uniform = []
-    for s0 in S_uniform:
-        F_uniform.append(
-            _residual(
-                float(s0),
-                integrate_fn,
-                p_eqState,
-                rho_eqState,
-                r0,
-                r_max,
-                xi,
-                lmbda,
-                nu,
-                rho0,
-                frac_pc,
-                target=target,  # accepts scalar or iterable
-                idx_sigma=idx_sigma,
-            )
-        )
-    F_uniform = np.array(F_uniform, float)
-
-    # Scale for fsolve (don’t rescale acceptance)
-    finite = np.isfinite(F_uniform)
-    if np.any(finite):
-        sigma_scale = max(1.0, np.median(np.abs(F_uniform[finite])))
-    else:
-        sigma_scale = max(1.0, abs(b - a))
-
-    def f_arr_x(x_vec):
-        s = _x_to_s(float(x_vec[0]), a, b)
-        return np.array(
-            [
-                _residual(
-                    s,
-                    integrate_fn,
-                    p_eqState,
-                    rho_eqState,
-                    r0,
-                    r_max,
-                    xi,
-                    lmbda,
-                    nu,
-                    rho0,
-                    frac_pc,
-                    target=target,
-                    idx_sigma=idx_sigma,
-                )
-                / sigma_scale
-            ]
-        )
-
-    # Seed selection: uniform + those with smallest |F_uniform|
-    k_extra = min(8, len(S_uniform) // 4)
-    idx_k = np.argsort(np.where(finite, np.abs(F_uniform), np.inf))[:k_extra]
-    S_seeds = np.unique(np.concatenate([S_uniform, S_uniform[idx_k]]))
-
-    roots = []
-    for s0 in S_seeds:
-        try:
-            x0 = _s_to_x(float(s0), a, b)
-            x_star, info, ier, _ = fsolve(f_arr_x, x0=[x0], full_output=True, xtol=xtol)
-            s_star = _x_to_s(float(x_star[0]), a, b)
-            fr = _residual(
-                s_star,
-                integrate_fn,
-                p_eqState,
-                rho_eqState,
-                r0,
-                r_max,
-                xi,
-                lmbda,
-                nu,
-                rho0,
-                frac_pc,
-                target=target,
-                idx_sigma=idx_sigma,
-            )
-            if not np.isfinite(fr):
-                continue
-            # fsolve convergence OR passes a residual test → candidate root
-            if (
-                ier == 1
-                or (abs(fr) <= abs_threshold)
-                or (s_star != 0.0 and abs(fr / s_star) <= tol_relative)
-            ):
-                roots.append(s_star)
-        except Exception:
-            continue
-
-    # Filter bracket and |σ0| floor, then de-dup
-    roots = [r for r in roots if (a <= r <= b) and (abs(r) >= sigma0_min_abs)]
-    roots = _unique_sorted(roots, tol=merge_tol)
-
-    # Evaluate residuals and accept PER ROOT (abs first, else relative)
-    evals = []
-    chosen = []
-    for r in roots:
-        fr = _residual(
-            r,
-            integrate_fn,
-            p_eqState,
-            rho_eqState,
+    for u, v in brackets:
+        s_star, delta, sigma_end, t_eff = find_root_brent(
+            u,
+            v,
             r0,
             r_max,
-            xi,
-            lmbda,
-            nu,
+            p_eqState,
+            rho_eqState,
+            xi_val,
+            lmbda_val,
+            nu_val,
             rho0,
             frac_pc,
-            target=target,
+            method,
             idx_sigma=idx_sigma,
+            target=target,
         )
-        evals.append((r, fr))
-        if abs(fr) <= abs_threshold or (r != 0.0 and abs(fr / r) <= tol_relative):
-            chosen.append(r)
+        if s_star is None or (not np.isfinite(delta)):
+            custom_print(
+                f"[brent] bracket [{u/M:.3e},{v/M:.3e}] → FAILED",
+                color="yellow",
+            )
+            continue
 
-    # Ψ2>0 regularity check
-    final = []
-    for r in chosen:
-        _, psi2 = _sigma2_psi2(r, p0, eps0, xi, lmbda, nu)
-        if np.isfinite(psi2) and (psi2 > 0.0):
-            final.append(r)
+        accept, reason = residual_accept(
+            sigma_rmax=sigma_end,
+            sigma0=s_star,
+            target=t_eff,
+            abs_threshold=abs_threshold,
+            tol_relative=tol_relative,
+        )
 
-    return _unique_sorted(final, tol=merge_tol)
+        _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, lmbda_val, nu_val)
+        psi_ok = np.isfinite(psi2) and (psi2 > 0.0)
+
+        if accept and psi_ok:
+            custom_print(
+                f"ACCEPT σ0/M={s_star/M:.6e}  |residual|/M={abs(delta)/M:.3e}  Ψ2={psi2:.3e}  via={reason}",
+                color="green",
+            )
+            candidates.append(float(s_star))
+            s_maxes.append(float(abs(delta)))
+        else:
+            msg = []
+            if not accept:
+                msg.append("residual too large")
+            if not psi_ok:
+                msg.append(f"Ψ2≤0 (Ψ2={psi2:.3e})")
+            why = "; ".join(msg) if msg else "unknown"
+            custom_print(
+                f"REJECT σ0/M={s_star/M:.6e}  |residual|/M={abs(delta)/M:.3e} → {why}",
+                color="red",
+            )
+
+    if merge_tol is not None and merge_tol > 0 and len(candidates) > 1:
+        order = np.argsort(np.abs(candidates))
+        cand_sorted = [candidates[i] for i in order]
+        res_sorted = [s_maxes[i] for i in order]
+        merged_c, merged_r = [cand_sorted[0]], [res_sorted[0]]
+        for s0, r0 in zip(cand_sorted[1:], res_sorted[1:]):
+            if abs(s0 - merged_c[-1]) <= merge_tol:
+                # keep the one with smaller residual
+                if r0 < merged_r[-1]:
+                    merged_c[-1], merged_r[-1] = s0, r0
+            else:
+                merged_c.append(s0)
+                merged_r.append(r0)
+        candidates, s_maxes = merged_c, merged_r
+
+    # return sorted unique list of roots by absolute value
+    return sorted(candidates, key=lambda z: abs(z)), s_maxes

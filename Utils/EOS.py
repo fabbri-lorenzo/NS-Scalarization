@@ -8,11 +8,29 @@ from Utils.params import c
 
 _RHO_FLOOR = 1e-12  # kg/m^3, tiny density floor to keep RHS well-defined at the surface
 
-_a = np.array([
-    0.0,  # dummy for 1-based
-    6.22, 6.121, 0.005925, 0.16326, 6.48, 11.4971, 19.105, 0.8938, 6.54,
-    11.4950, -22.775, 1.5707, 4.3, 14.08, 27.80, -1.653, 1.50, 14.67
-])  # A&A 428, 191 (2004), Eq.(14), Tab.1. 
+_a = np.array(
+    [
+        0.0,
+        6.22,
+        6.121,
+        0.005925,
+        0.16326,
+        6.48,
+        11.4971,
+        19.105,
+        0.8938,
+        6.54,
+        11.4950,
+        -22.775,
+        1.5707,
+        4.3,
+        14.08,
+        27.80,
+        -1.653,
+        1.50,
+        14.67,
+    ]
+)  # Tab.1.
 
 def _f0(x):  # logistic smoother, Eq.(13)
     return 1.0 / (np.exp(x) + 1.0)
@@ -28,7 +46,7 @@ def _zeta_of_chi(chi):
 
 def p_SLy4(rho_mass_energy_kg_m3):
     """
-    Input:  ρ = E/c^2 in kg/m^3  (mass–energy density, NOT just rest-mass).
+    Input:  ρ = E/c^2 in kg/m^3  (mass–energy density).
     Output: P in Pa.
     """
     rho_cgs = rho_mass_energy_kg_m3 / 1e3          # kg/m^3 -> g/cm^3
@@ -40,29 +58,31 @@ def p_SLy4(rho_mass_energy_kg_m3):
 def rho_SLy4(p_Pa):
     """
     Invert SLy4 to get rest-mass density ρ [kg/m^3] from pressure p [Pa].
-    Clamps pressure to the EOS range and returns a tiny floor density when p is
-    below the fit range to avoid brentq crashes near the surface.
+    Works with scalars or numpy arrays.
     """
-    P_target = float(p_Pa)
+    P_in = np.asarray(p_Pa, dtype=float)
 
     # valid chi domain of the fit
     chi_min, chi_max = 0.0, 16.0
-    p_min = 0.1 * (10.0**_zeta_of_chi(chi_min))  # Pa at ρ=1 g/cm^3
-    p_max = 0.1 * (10.0**_zeta_of_chi(chi_max))  # Pa at ρ=1e16 g/cm^3
+    p_min = 0.1 * (10.0 ** _zeta_of_chi(chi_min))  # Pa
+    p_max = 0.1 * (10.0 ** _zeta_of_chi(chi_max))  # Pa
 
-    # Clamp out-of-range pressures
-    if not np.isfinite(P_target) or P_target <= p_min:
-        return _RHO_FLOOR            # vacuum-ish outside star
-    if P_target >= p_max:
-        rho_cgs = 10.0**chi_max
-        return rho_cgs * 1e3         # cap at max table density
+    def _invert_scalar(P_target):
+        if not np.isfinite(P_target) or P_target <= p_min:
+            return _RHO_FLOOR
+        if P_target >= p_max:
+            return (10.0**chi_max) * 1e3  # kg/m^3
 
-    # Safe inversion inside the domain
-    def f(chi):
-        return 0.1 * (10.0**_zeta_of_chi(chi)) - P_target
+        def f(chi):  # root in chi = log10(rho_cgs)
+            return 0.1 * (10.0 ** _zeta_of_chi(chi)) - P_target
 
-    chi_root = brentq(f, chi_min, chi_max)
-    rho_cgs = 10.0**chi_root
-    return rho_cgs * 1e3
+        chi_root = brentq(f, chi_min, chi_max)
+        return (10.0**chi_root) * 1e3  # kg/m^3
 
-
+    if P_in.ndim == 0:
+        return _invert_scalar(P_in.item())
+    out = np.empty_like(P_in, dtype=float)
+    it = np.nditer(P_in, flags=["multi_index"])
+    for x in it:
+        out[it.multi_index] = _invert_scalar(float(x))
+    return out
