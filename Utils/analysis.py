@@ -3,27 +3,44 @@ import numpy as np
 from Utils.TOV import initial_conditions, make_tov_EMG, StoppingConditions
 from Utils.params import c, G_N
 
+
 # ---------- helpers ----------
-def count_nodes_sigma(sigma, target):
-    s = np.asarray(sigma, dtype=float) - target
-    nz = s != 0
-    if nz.sum() < 2:
+def count_nodes_sigma(sigma, target, tol=None, hysteresis=3.0):
+    # subtract the vacuum baseline
+    s = np.asarray(sigma, dtype=float) - float(target)
+    # choose a scale‑aware tolerance if the caller didn’t specify one
+    A = np.nanmax(np.abs(s)) if s.size else 0.0
+    if tol is None:
+        tol = 1e-12 if not np.isfinite(A) else max(1e-12, 1e-6 * A)
+    # drop NaNs and points close to zero
+    m = np.isfinite(s) & (np.abs(s) > tol)
+    s = s[m]
+    if s.size < 2:
         return 0
-    s = s[nz]
+    # compress consecutive sign blocks
     sign = np.sign(s)
-    return int(np.sum(sign[1:] * sign[:-1] < 0.0))
+    keep = np.concatenate(([True], sign[1:] != sign[:-1]))
+    s = s[keep]
+    sign = sign[keep]
+    # apply a hysteresis: only count a flip if the block spans more than hysteresis×tol
+    flips, i0 = 0, 0
+    for i1 in range(1, sign.size):
+        if sign[i1] != sign[i0]:
+            block = s[i0 : i1 + 1]
+            if np.nanmax(block) - np.nanmin(block) > hysteresis * tol:
+                flips += 1
+            i0 = i1
+    return flips
+
 
 def node_count_to_2R(sol, R_star_m, target, idx_sigma=2):
-    if R_star_m is None or not np.isfinite(R_star_m):
-        r = sol.t
-        sigma = sol.y[idx_sigma]
-    else:
-        r = sol.t
-        sigma = sol.y[idx_sigma]
-        m = r <= 2.0 * R_star_m
-        r = r[m]
-        sigma = sigma[m]
-    return count_nodes_sigma(sigma,target)
+    r = np.asarray(sol.t, dtype=float)
+    sigma = np.asarray(sol.y[idx_sigma], dtype=float)
+    if R_star_m is not None and np.isfinite(R_star_m):
+        mask = r <= 2.0 * R_star_m
+        if np.any(mask):
+            sigma = sigma[mask]
+    return count_nodes_sigma(sigma, target)
 
 
 def adm_mass_from_sol(sol, k_tail=15):

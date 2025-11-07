@@ -247,6 +247,8 @@ def probe_brackets(
     """
 
     candidates = []
+    residuals = []
+    vac_signs = []
     s_maxes = []
 
     # Precompute central quantities for the Ψ2 check
@@ -277,6 +279,8 @@ def probe_brackets(
             )
             continue
 
+        vac = 1 if nu_val != 0.0 and t_eff >= 0 else -1 if nu_val != 0.0 else 0
+
         accept, reason = residual_accept(
             sigma_rmax=sigma_end,
             sigma0=s_star,
@@ -293,6 +297,8 @@ def probe_brackets(
                 f"ACCEPT σ0/M={s_star/M:.6e}  |residual|/M={abs(delta)/M:.3e}  Ψ2={psi2:.3e}  via={reason}",
                 color="green",
             )
+            residuals.append(abs(delta))
+            vac_signs.append(vac)
             candidates.append(float(s_star))
             s_maxes.append(float(abs(delta)))
         else:
@@ -312,15 +318,27 @@ def probe_brackets(
         cand_sorted = [candidates[i] for i in order]
         res_sorted = [s_maxes[i] for i in order]
         merged_c, merged_r = [cand_sorted[0]], [res_sorted[0]]
-        for s0, r0 in zip(cand_sorted[1:], res_sorted[1:]):
-            if abs(s0 - merged_c[-1]) <= merge_tol:
-                # keep the one with smaller residual
-                if r0 < merged_r[-1]:
-                    merged_c[-1], merged_r[-1] = s0, r0
-            else:
-                merged_c.append(s0)
-                merged_r.append(r0)
-        candidates, s_maxes = merged_c, merged_r
+        grouped = {}
+        for s0, r0, vs in zip(candidates, residuals, vac_signs):
+            grouped.setdefault(vs, []).append((s0, r0))
+        merged_c, merged_r, merged_v = [], [], []
+        for vs, group in grouped.items():
+            # sort by |s0| and merge only within this vacuum sign
+            order = sorted(group, key=lambda x: abs(x[0]))
+            cur_s0, cur_r = order[0]
+            for s0, r0 in order[1:]:
+                if abs(s0 - cur_s0) <= merge_tol:
+                    if r0 < cur_r:
+                        cur_s0, cur_r = s0, r0
+                else:
+                    merged_c.append(cur_s0)
+                    merged_r.append(cur_r)
+                    merged_v.append(vs)
+                    cur_s0, cur_r = s0, r0
+            merged_c.append(cur_s0)
+            merged_r.append(cur_r)
+            merged_v.append(vs)
+        candidates, residuals, vac_signs = merged_c, merged_r, merged_v
 
     # return sorted unique list of roots by absolute value
     return sorted(candidates, key=lambda z: abs(z)), s_maxes

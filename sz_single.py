@@ -20,18 +20,18 @@ p_eqState = p_SLy4
 rho_eqState = rho_SLy4  
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
-rho0 = rho0_heavyS
-xi_val = 1e4
+rho0 = rho0_lightS
+xi_val = 10
 
-#lmbda_val = 0.0
+# lmbda_val = 0.0
 lmbda_val = 1/M**2.5
-#lmbda_val = pow(10, 2 * 2.4) * 20.869 / ((M * M) ** 2)
-#lmbda_val = xi_val**2 * 1e-10 / 4.165
-#lmbda_val = lmbda_to_SI(0.01)  # Dimensionless self-coupling converted to s^2 kg^-1 m^-3
+# lmbda_val = pow(10, 2 * 2.4) * 20.869 / ((M * M) ** 2)
+# lmbda_val = xi_val**2 * 1e-10 / 4.165
+# lmbda_val = lmbda_to_SI(0.01)  # Dimensionless self-coupling converted to s^2 kg^-1 m^-3
 
-#nu_val = 0.0
+# nu_val = 0.0
 nu_val = M*1e-2
-#nu_val = M / np.sqrt(xi_val)
+# nu_val = M / np.sqrt(xi_val)
 
 method = "BDF" if (xi_val < 0.0 or lmbda_val>1e-40 or nu_val > M*1e-1) else "RK45"
 
@@ -286,8 +286,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-    
-    
-    
-        
