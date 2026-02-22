@@ -215,7 +215,6 @@ def fit_tail_Rlog_and_Q(
 
 
 # Scal_charge_from_sol now auto-fits R_log when λ ≠ 0 and tail-averages Q
-# NEW: Yukawa-tail charge from σ (not σ′)
 def tail_charge_yukawa(
     sol, m, nu, *, idx_sigma=2, r_window=("frac", 0.6, 0.95), n_points=400
 ):
@@ -282,6 +281,7 @@ def tail_charge_yukawa(
 
 def scal_charge_from_sol(
     sol,
+    m2,
     lmbda,
     nu,
     r_max,
@@ -297,14 +297,22 @@ def scal_charge_from_sol(
       - Pure quartic (λ>0, ν==0):  fit R_log (or use override) and tail-average Q_log(r) = - r^2 σ' sqrt(ln(r/R_log)).
       - Yukawa (ν!=0):             use σ-tail: Q(r) = r * e^{m r} * (σ - σ_∞), median over a tail window.
 
-    Returns Q in your physical normalization, matching your previous convention.
+    Returns Q in physical normalization, matching previous convention.
     """
     import numpy as np
     from Utils.params import M, c, G_N
 
     # --- DEF: massless linear (Coulomb) ---
-    if (lmbda == 0.0) and (nu == 0.0):
+    if (lmbda == 0.0) and (nu == 0.0) and (m2 == 0.0):
         Q_num = -(r_max**2) * float(sol.y[idx_sigmap][-1])
+        return Q_num / M * (c * c) / G_N
+
+    # physical mass exponent (same units as 1/r)
+    m_mass = float(np.sqrt(max(0.0, m2)))  # m2 is μ^2
+
+    # --- MASSIVE (ν==0): Yukawa around σ∞=0 ---
+    if (nu == 0.0) and (m_mass > 0.0):
+        Q_num = float(sol.y[idx_sigma][-1]) * np.exp(m_mass * r_max) * r_max
         return Q_num / M * (c * c) / G_N
 
     # --- YUKAWA: m = sqrt(2 λ) |ν|, use σ-based estimator (stable) ---
@@ -367,6 +375,7 @@ def integrate_star(
     r0,
     r_max,
     xi,
+    m2,
     lmbda,
     nu,
     rho0,
@@ -376,7 +385,7 @@ def integrate_star(
     record_mu2=False,
 ):
     r_span = (r0, r_max)
-    y0 = initial_conditions(r0, sigma0, p_eqState, xi, rho0, lmbda, nu)
+    y0 = initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu)
 
     # If the center expansion is invalid (NaNs), return a minimal stub result.
     if not np.all(np.isfinite(y0)):
@@ -396,10 +405,10 @@ def integrate_star(
     mu2_log = []
     if record_mu2:
         tov = make_tov_EMG(
-            p_c, frac_pc, rho_eqState, xi, lmbda, nu, mu2_recorder=mu2_log.append
+            p_c, frac_pc, rho_eqState, xi, m2, lmbda, nu, mu2_recorder=mu2_log.append
         )
     else:
-        tov = make_tov_EMG(p_c, frac_pc, rho_eqState, xi, lmbda, nu)
+        tov = make_tov_EMG(p_c, frac_pc, rho_eqState, xi, m2, lmbda, nu)
 
     events = StoppingConditions(p_c, frac_pc)
     ev_surface = events.pressure_limit()

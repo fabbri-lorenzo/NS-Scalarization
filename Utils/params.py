@@ -29,6 +29,11 @@ def lmbda_to_SI(lmbda_dimless):
     return lmbda_dimless / (hbar * c)
 
 
+def m_ev_to_SI(mu_ev):
+    """Covert scalar mass from eV to SI units (m^-1)"""
+    return mu_ev * 5.07 * 1e6
+
+
 # print(hbar * c / M2)
 # print(1 / M2)
 # print(1 / M**1.9)

@@ -36,7 +36,6 @@ def sci10_ticks_symlog(x, _pos):
     exp = int(np.floor(np.log10(abs(x_scaled))))
     return rf"$10^{{{exp}}}$"
 
-# ADD this near the other tick helpers
 def sci_a10_ticks(y, _pos):
     if y == 0:
         return r"$0$"
@@ -44,7 +43,6 @@ def sci_a10_ticks(y, _pos):
     mant = y / (10 ** exp)
     # keep a compact mantissa (avoid trailing zeros); 3 sig figs is usually plenty
     return rf"${mant:.3g}\times 10^{{{exp}}}$"
-
 
 
 # ---------- IO ----------
@@ -278,13 +276,11 @@ def plot_q_over_m_vs_lambda_at_xi(
 if __name__ == "__main__":
     sw = 'L'
     plot_q_over_m_vs_lambda_at_xi(
-        path=f"Results/scan/{sw}/nu=0e+00",
-        xi_sel= 100,             # <- fix a xi here
-        zoom = True,
+        path=f"Results/scan/{sw}/nu=2e+16_ZOOM",
+        xi_sel=1,
+        zoom=False,
         natural_units=True,
         rho0_tag=f"{sw}",
         include_modes=(0, 1, 2, 3),
-        out_path=f"Results/scan/{sw}/nu=0e+00/Q_M.png",
+        out_path=f"Results/scan/{sw}/nu=2e+16_ZOOM/Q_M.png",
     )
-
-

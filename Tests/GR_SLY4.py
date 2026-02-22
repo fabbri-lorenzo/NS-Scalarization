@@ -23,7 +23,7 @@ def _fit_polytrope_to_SLy4(rho_ref, span=2.5, n=100):
 
 # === Initial Conditions ===
 def initial_conditions(r0):
-    rho0 = rho0_lightS # Density in Kg/m^3 - will give 1.12 solar masses in GR
+    rho0 = rho0_lightS  # Density in Kg/m^3
     p0 = p_eqState(rho0)
     m0 = (4/3) * np.pi * rho0 * r0**3 *G_N/(c*c) #reduced mass
     Phi2 = (p0+2*rho0/3)/(4*M2) * r0**2  # from TOV, O(r^2) expansion
@@ -175,91 +175,123 @@ if __name__ == "__main__":
         "Final mass:", sol_poly.y[1][-1] * (c * c / G_N) / SM, "Solar Masses"
     )  # in Solar Masses
 
-    # ===== Plotting section =====
-    fig, ax = plt.subplots()
+    # ===== Plotting section: pressure + mass profiles =====
+    # main EoS solution (assumed already computed)
+    # r = sol.t
+    # P = sol.y[0]
+    # R = r[-1]   # if you don't already have R defined
 
-    ax.plot(r / 1e3, P, color="blue", label="Pressure [Pa] (SLy4)")
-    ax.plot(r / 1e3, rho * c * c, color="teal", label="Energy density [J/m³] (SLy4)")
+    # polytrope solution (already computed in your snippet)
+    # r_poly = sol_poly.t
+    # P_poly = sol_poly.y[0]
 
-    # Polytrope overlays
-    ax.plot(
-        r_poly / 1e3,
-        P_poly,
+    fig, (axP, axM) = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(8, 7))
+
+    # -------------------------
+    # Pressure subplot
+    # -------------------------
+    axP.plot(r / 1e3, P, color="blue", label="Pressure SLy4")
+    axP.plot(r_poly / 1e3, P_poly, color="red", label="Pressure Polytrope")
+
+    axP.axvline(
+        x=R / 1e3, color="blue", linestyle="--", alpha=0.6, label="Star radius SLy4"
+    )
+    axP.axvline(
+        x=r_poly[-1] / 1e3,
+        color="red",
         linestyle="--",
-        color="blue",
-        alpha=0.8,
-        label="Pressure [Pa] (poly)",
+        alpha=0.6,
+        label="Star radius Polytrope",
     )
-    ax.plot(
-        r_poly / 1e3,
-        rho_poly_prof * c * c,
+
+    axP.set_ylabel("P [Pa]")
+    axP.set_xlim(left=0)
+
+    axP.yaxis.set_major_formatter(FuncFormatter(sci_cdot))
+    axP.yaxis.get_offset_text().set_visible(False)
+
+    axP.grid(True, which="both", alpha=0.2)
+    axP.legend()
+
+    # -------------------------
+    # Mass subplot
+    # -------------------------
+    M_sun = 1.98847e30  # kg
+
+    # IMPORTANT:
+    # If your integrated variable y[1] is the *geometrized mass* (in meters),
+    # use the conversion below (typical in TOV setups).
+    M_prof = sol.y[1] * (c**2 / G_N) / M_sun
+    M_poly_prof = sol_poly.y[1] * (c**2 / G_N) / M_sun
+
+    # If instead sol.y[1] is already in kg, use this instead:
+    # M_prof = sol.y[1] / M_sun
+    # M_poly_prof = sol_poly.y[1] / M_sun
+
+    axM.plot(r / 1e3, M_prof, color="blue", label="Mass SLy4")
+    axM.plot(r_poly / 1e3, M_poly_prof, color="red", label="Mass Polytrope")
+
+    axM.axvline(
+        x=R / 1e3, color="blue", linestyle="--", alpha=0.6, label="Star radius SLy4"
+    )
+    axM.axvline(
+        x=r_poly[-1] / 1e3,
+        color="red",
         linestyle="--",
-        color="teal",
-        alpha=0.8,
-        label="Energy density [J/m³] (poly)",
+        alpha=0.6,
+        label="Star radius Polytrope",
     )
 
-    # Stellar radius line
-    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    ax.axvline(
-        x=R / 1e3, color="c", linestyle="--", alpha=0.75, label="Star radius (SLy4)"
-    )
-    # ax.axvline(
-    #    x=r_poly[-1] / 1e3,
-    #    color="slateblue",
-    #    linestyle="--",
-    #    alpha=0.75,
-    #    label="Star radius (poly)",
-    # )
+    axM.set_xlabel("r [km]")
+    axM.set_ylabel(r"$M [M_\odot]$")
+    axM.grid(True, which="both", alpha=0.2)
+    axM.legend()
 
-    ax.set_xlabel("r [Km]")
-    ax.set_xlim(left=0)
-
-    # --- 10^n tick labels, no ×10^n offset ---
-    ax.yaxis.set_major_formatter(FuncFormatter(sci_cdot))
-    ax.yaxis.get_offset_text().set_visible(False)
-
-    # === Define radii (m) ===
-    R_m = R
-    r_cc_m = 10.4e3
-    r_drip_m = 11.4e3
-
-    # === Shade regions and collect handles ===
-    region_handles, region_labels = shade_crust_regions(ax, R_m, r_cc_m, r_drip_m)
-
-    # === First legend: physical quantities ===
-    legend1 = ax.legend(loc="center left", bbox_to_anchor=(0.01, 0.35), framealpha=0.9)
-    # legend1 = ax.legend(loc="best", framealpha=0.9)
-
-    ## === Second legend: structure ===
-    legend2 = ax.legend(
-        region_handles,
-        region_labels,
-        title="Stellar Regions (SLy4)",
-        loc="center left",
-        bbox_to_anchor=(0.01, 0.6),
-        framealpha=0.9,
-    )
-    ax.add_artist(legend1)  # ensure both legends appear
-
-    ax.grid(False)
-    fig.tight_layout()
-    fig.savefig("Tests/Results_rhoe17/pressureGR_shaded.png", dpi=300)
+    plt.tight_layout()
+    plt.savefig("Tests/Results_rhoe17/comparison.png", dpi=300)
     plt.show()
 
-    # --- Mass and metric ---
-    plt.plot(
-        r / 1e3,
-        sol.y[1] * (c * c / G_N) / (SM),
-        color="indigo",
-        label="Mass m(r) in Solar Masses",
-    )
-    plt.plot(
-        sol.t / 1e3, np.exp(Phi_norm), color="darkcyan", label="Metric Function e^2Φ(r)"
-    )
-    plt.xlabel("r [Km]")
-    plt.legend()
-    plt.grid(True)
-    plt.title("Mass Metric GR")
-    plt.savefig("Tests/Results_rhoe17/mass_metricGR.png", dpi=300)
-    plt.show()
+    ## === Define radii (m) ===
+    # R_m = R
+    # r_cc_m = 10.4e3
+    # r_drip_m = 11.4e3
+#
+## === Shade regions and collect handles ===
+# region_handles, region_labels = shade_crust_regions(ax, R_m, r_cc_m, r_drip_m)
+#
+## === First legend: physical quantities ===
+# legend1 = ax.legend(loc="center left", bbox_to_anchor=(0.01, 0.35), framealpha=0.9)
+## legend1 = ax.legend(loc="best", framealpha=0.9)
+#
+### === Second legend: structure ===
+# legend2 = ax.legend(
+#    region_handles,
+#    region_labels,
+#    title="Stellar Regions (SLy4)",
+#    loc="center left",
+#    bbox_to_anchor=(0.01, 0.6),
+#    framealpha=0.9,
+# )
+# ax.add_artist(legend1)  # ensure both legends appear
+#
+# ax.grid(False)
+# fig.tight_layout()
+# fig.savefig("Tests/Results_rhoe17/pressureGR_shaded.png", dpi=300)
+# plt.show()
+
+## --- Mass and metric ---
+# plt.plot(
+#    r / 1e3,
+#    sol.y[1] * (c * c / G_N) / (SM),
+#    color="indigo",
+#    label="Mass m(r) in Solar Masses",
+# )
+# plt.plot(
+#    sol.t / 1e3, np.exp(Phi_norm), color="darkcyan", label="Metric Function e^2Φ(r)"
+# )
+# plt.xlabel("r [Km]")
+# plt.legend()
+# plt.grid(True)
+# plt.title("Mass Metric GR")
+# plt.savefig("Tests/Results_rhoe17/mass_metricGR.png", dpi=300)
+# plt.show()
