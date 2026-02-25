@@ -20,6 +20,7 @@ lmbda_EMG = (
 # lmbda_EMG = 5e-46   # Scalar self-coupling  in s^2 kg^-1 m^-3
 # print(pow(10, 2 * V0) / (3.516 * 1e109))
 
+
 # --- Higgs parameters ---
 v_higgs = 246e9 * 9 * 1e-7  # 1e-16 M
 v_higgs_M = v_higgs / M  # Convert eV to kg
@@ -34,7 +35,6 @@ def lmbda_to_SI(lmbda_dimless):
 def m_ev_to_SI(mu_ev):
     """Covert scalar mass from eV to SI units (m^-1)"""
     return mu_ev * 5.07 * 1e6
-
 
 # print(hbar * c / M2)
 # print(1 / M2)

@@ -425,6 +425,7 @@ def integrate_star(
             method=method,
             rtol=1e-6,
             atol=1e-9,
+            # min_step=1e-5, #only avaible for LSODA
             events=[ev_surface, ev_2R, ev_blow],
         )
     else:
@@ -436,6 +437,7 @@ def integrate_star(
             method=method,
             rtol=1e-6,
             atol=1e-9,
+            # min_step=1e-5, #only avaible for LSODA
             events=[ev_blow],
         )
 

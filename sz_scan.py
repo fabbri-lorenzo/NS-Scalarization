@@ -1,188 +1,339 @@
-import os, csv, time
-import numpy as np
-from tqdm import tqdm  
+"""
+Parallelised scan over coupling parameters for scalarised neutron stars.
 
-from Utils.params import M, SM, rho0_lightS, rho0_heavyS, lmbda_to_SI
+This script performs two complementary scans:
+
+* **ξ–scan at fixed λ** – varying ξ over a user‑specified range while
+  keeping λ and ν fixed.  For each central density (light and heavy
+  stars) the solver is invoked in parallel and the resulting
+  Q/ℳ ratios are recorded in a CSV file.
+
+* **λ–scan at fixed ξ** – varying λ over a user‑specified range while
+  keeping ξ and ν fixed.  Results are stored analogously.
+
+The output CSVs can be consumed by the plotting routines in
+``Q_M.py`` to produce Q/M versus ξ or λ graphs.  Each row of the CSV
+contains the scanned parameter value, the star tag (``L`` or ``H``),
+a flag indicating whether scalarisation occurred (``scalarized``),
+the mode number, vacuum sign, σ₀/M, ADM mass and scalar charge in
+solar masses, their ratio, and the stellar radius.  If no
+scalarised solution is found at a given scan point, a row with
+``scalarized=0`` and empty fields is written.
+"""
+
+from __future__ import annotations
+
+import os
+import csv
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Dict, Any, Iterable, Tuple
+
+import numpy as np
+
+from Utils.params import (
+    M,
+    SM,
+    rho0_lightS,
+    rho0_heavyS,
+)
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics_single import custom_print
-from Utils.shooting import diagnostic_scan, probe_brackets
-from Utils.analysis import integrate_star, node_count_to_2R, adm_mass_from_sol, scal_charge_from_sol
+from Utils.core import solve_model
 
-# -------- fixed inputs --------
-p_eqState   = p_SLy4
-rho_eqState = rho_SLy4
-frac_pc     = 1e-10
-rho0        = rho0_lightS
-r0, r_max   = 1e-2, 3e5
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - optional dependency
+    tqdm = None
 
-# xi_min, xi_max, xi_step = -1, 1, 0.05
-xi_min, xi_max, xi_step = -100, 100, 1
-lmbda = 1/M**2.2
-nu   = 1e-5*M
-# nu   = 246.0 * 9.0 * 1e2
 
-N_efolds = 55
+def _run_single_point(
+    params_template: Dict[str, Any],
+    rho0: float,
+    xi_val: float,
+    lmbda_val: float,
+    nu_val: float,
+    m_val: float,
+) -> Tuple[float, float, Dict[str, Any]]:
+    """Worker helper to evaluate one (ξ, λ) point.
 
-a, b = 1e-8 * M, 0.5*M
-abs_cut   = a * 1e-2
-rel_cut   = 1e-2
-merge_tol = a* 1e-2
-# --------------------------------
-
-def lambda_from_xi(xi):
-    lmbda_NU = (xi / N_efolds) ** 2 * 3.0 / (0.02656 ** 4) 
-    lmbda_SI = lmbda_to_SI(lmbda_NU)
-    return lmbda_SI
-
-def main():
-    t0 = time.perf_counter()
-    star_weight = "L" if rho0 is rho0_lightS else "H"
-    sw = "Light" if rho0 is rho0_lightS else "Heavy"
-
-    out_dir = f"Results/scan/{star_weight}/nu={nu:.0e}"
-    os.makedirs(out_dir, exist_ok=True)
-    out_csv = os.path.join(out_dir,f"lmbda={lmbda:.0e}.csv")
-    
-    custom_print(
-        f"\nξ in ({xi_min},{xi_max}) | λ = {lmbda:.2e} | ν = {nu:.2e} | {sw} star",
-        style="bold",
+    It constructs a fresh parameter dict from ``params_template`` and
+    overrides the values of ξ, λ, ν, m and the integrator method.
+    Returns the (ξ, λ, result) triple.  Any exception inside
+    :func:`solve_model` will propagate to the caller.
+    """
+    # Copy base params to avoid cross‑talk between tasks
+    p = dict(params_template)
+    p["xi"] = xi_val
+    p["lmbda"] = lmbda_val
+    p["nu"] = nu_val
+    p["m"] = m_val
+    # Update shooting targets and method accordingly
+    p["target_shooting"] = [0.0] if nu_val == 0.0 else [abs(nu_val), -abs(nu_val)]
+    # Determine method heuristically: replicate sz_single logic
+    p["method"] = (
+        "BDF"
+        if (xi_val <= 0.0 or lmbda_val > 1e-65 or nu_val > M * 0.1 or m_val >= 1e-11)
+        else "RK45"
     )
+    result = solve_model(p, rho0)
+    return xi_val, lmbda_val, result
 
-    with open(out_csv, "a", newline="") as f:
-        w = csv.writer(f)
-        w.writerow([
-                "xi", "lambda", "nu",
-                "rho0_tag",
-                "scalarized",
-                "mode_n",
-                "vacuum_sign",   # +1 / -1 / 0 (for nu=0)
-                "sigma0_over_M",
-                "ADM_over_Msun",
-                "Q_over_Msun",
-                "Q_over_ADM",
-                "R_star_km"
-            ])
 
-        for xi_val in tqdm(np.arange(xi_min, xi_max +xi_step, xi_step),
-                           desc="Scanning ξ values", unit="ξ"):
-            lmbda_val = lmbda if lmbda is not None else lambda_from_xi(xi_val)
-            target = [0.0] if nu == 0.0 else [abs(nu), -abs(nu)]
-            method = "BDF" if (xi_val < 0.0 or lmbda > 1e-40) else "RK45" 
+def _write_scan_row(
+    writer: csv.writer,
+    xi_val: float,
+    lmbda_val: float,
+    nu_val: float,
+    star_tag: str,
+    result: Dict[str, Any] | None,
+):
+    """Write one scan row to CSV given the solve result.
 
-            try:
-                F, brackets = diagnostic_scan(
-                    r0, r_max,
-                    p_eqState, rho_eqState,
-                    xi_val, lmbda_val, nu,
-                    rho0, frac_pc, method,
-                    a, b,
-                    n=201,
-                    target=target,
-                )
-                #custom_print(
-                # f"[diagnostics] scan over [{a/M:.1e},{b/M:.1e}]*M: "
-                # f"{np.sum(np.isfinite(F))}/{len(F)} finite samples, sign-change brackets={len(brackets)}",
-                # color="gray",
-                #  )
+    If ``result`` is ``None`` or contains no data rows, write a row
+    indicating that scalarisation did not occur.
+    """
+    if not result or not result.get("data_rows") or len(result["data_rows"]) <= 1:
+        # no solutions found
+        writer.writerow(
+            [
+                xi_val,
+                f"{lmbda_val:.1e}",
+                f"{nu_val:.1e}",
+                star_tag,
+                0,  # scalarized flag
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+        return
+    # At least one solution: iterate over all modes
+    for row in result["data_rows"][1:]:
+        (
+            mode_n,
+            vac_sign,
+            sigma0_over_M,
+            ADM_over_Msun,
+            Q_over_Msun,
+            Q_over_ADM,
+            R_star_km,
+        ) = row
+        writer.writerow(
+            [
+                xi_val,
+                f"{lmbda_val:.1e}",
+                f"{nu_val:.1e}",
+                star_tag,
+                1,
+                mode_n,
+                vac_sign,
+                sigma0_over_M,
+                ADM_over_Msun,
+                Q_over_Msun,
+                Q_over_ADM,
+                R_star_km,
+            ]
+        )
 
-                if len(brackets) == 0:
-                    w.writerow([xi_val, f"{lmbda_val:.1e}", f"{nu:.1e}", star_weight, 0, "", "", "", "", "", "", ""])
-                    continue
 
-                s0_list, s_maxes = probe_brackets(
-                    brackets=brackets,
-                    r0=r0, r_max=r_max,
-                    p_eqState=p_eqState, rho_eqState=rho_eqState,
-                    xi_val=xi_val, rho0=rho0, frac_pc=frac_pc, method=method,
-                    lmbda_val=lmbda_val, nu_val=nu,
-                    abs_threshold=abs_cut, tol_relative=rel_cut, merge_tol=merge_tol,
-                    target=target, idx_sigma=2,
-                )
+def run_scan() -> None:
+    """Perform ξ and λ scans for both light and heavy stars."""
+    # ----- define the scan ranges -----
+    # ξ scan: set the range and step here
+    # xi_min, xi_max, xi_step = -10.0, 10.0, 0.25
+    xi_min, xi_max, xi_step = -10.0, 5, 2.5
+    # λ scan: list of values to sample; choose logarithmic spacing
+    lmbda_scan = [
+        0.0,
+        # 1e-76,
+        1e-74,
+        # 1e-72,
+        # 1e-70,
+        # 1e-68,
+        # 1e-66,
+        # 1e-64,
+        # 1e-62,
+        # 1e-60,
+        # 1e-58,
+        # 1e-56,
+        # 1e-54,
+        1e-52,
+        1e-50,
+    ]
+    # fixed values for the other parameter during each scan
+    xi_fixed_for_lambda_scan = 100
+    lmbda_fixed_for_xi_scan = 0.0
+    # physical constants
+    nu_val = 0.0
+    m_val = 0.0
 
-                if not s0_list:
-                    w.writerow([xi_val, f"{lmbda_val:.1e}", f"{nu:.1e}", star_weight, 0, "", "", "", "", "", "", ""])
-                    continue
+    # base parameter template (common to all scan points)
+    params_template: Dict[str, Any] = {
+        "p_eqState": p_SLy4,
+        "rho_eqState": rho_SLy4,
+        "frac_pc": 1e-10,
+        # The following will be overridden per point
+        "xi": xi_fixed_for_lambda_scan,
+        "m": m_val,
+        "lmbda": lmbda_fixed_for_xi_scan,
+        "nu": nu_val,
+        "method": "RK45",
+        "a": 1e-10 * M,
+        "b": M,
+        "abs_cut": (1e-10 * M) * 1e-2,
+        "rel_cut": 1e-2,
+        "merge_tol": (1e-10 * M) * 1e-2,
+        "target_shooting": [0.0],
+    }
 
-                smax_by_s0 = {s: sm for s, sm in zip(s0_list, s_maxes)}
-                
-                nu_abs = abs(nu)
-                
-                per_mode = {}
-                for s0 in s0_list:
-                    sol, _, R_star_m = integrate_star(
-                        s0, p_eqState, rho_eqState, r0, r_max,
-                        xi_val, lmbda_val, nu, rho0, frac_pc, method,
-                        stop_at_2r=True, record_mu2=False,
+    # List of stars to scan
+    stars = [
+        (rho0_lightS, "L"),
+        (rho0_heavyS, "H"),
+    ]
+
+    # ---- ξ scan at fixed λ ----
+    xi_values = list(np.arange(xi_min, xi_max + xi_step * 0.5, xi_step))
+    lmbda_val = lmbda_fixed_for_xi_scan
+    for rho0, tag in stars:
+        custom_print(
+            f"\nPerforming ξ–scan for star {tag}: λ={lmbda_val:.2e}, ν={nu_val:.2e}",
+            style="bold",
+        )
+        out_dir = os.path.join("Results", "scan", tag)
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(
+            out_dir, f"xi_scan_lmbda={lmbda_val:.0e}_nu={nu_val:.0e}.csv"
+        )
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "xi",
+                    "lambda",
+                    "nu",
+                    "rho0_tag",
+                    "scalarized",
+                    "mode_n",
+                    "vacuum_sign",
+                    "sigma0_over_M",
+                    "ADM_over_Msun",
+                    "Q_over_Msun",
+                    "Q_over_ADM",
+                    "R_star_km",
+                ]
+            )
+            # Parallelise over ξ values
+            with ProcessPoolExecutor(max_workers=4) as ex:
+                futures = {}
+                for xi_val in xi_values:
+                    fut = ex.submit(
+                        _run_single_point,
+                        params_template,
+                        rho0,
+                        xi_val,
+                        lmbda_val,
+                        nu_val,
+                        m_val,
                     )
-                    if R_star_m is None:
-                        continue
-                    if nu != 0.0:
-                      diff_plus = abs(smax_by_s0[s0] - nu_abs)
-                      diff_minus = abs(smax_by_s0[s0] + nu_abs)
-                      target = nu_abs if (diff_plus <= diff_minus) else -nu_abs
-                    else:
-                      target = 0.0 
-                       
-                    n_nodes = node_count_to_2R(sol, R_star_m, target, idx_sigma=2)
-                    per_mode.setdefault(n_nodes, []).append(dict(s0=s0, sol=sol, R_star_m=R_star_m, smax=smax_by_s0[s0]))
-
-                selected = []
-                for n, cands in sorted(per_mode.items()):
-                    if not cands:
-                        continue
-                    if nu != 0.0:
-                        for sign in (+1, -1):
-                            group = []
-                            for d in cands:
-                                val = float(d["sol"].y[2, -1])
-                                diff_plus = abs(val - nu_abs)
-                                diff_minus = abs(val + nu_abs)
-                                sign_val = +1 if (diff_plus <= diff_minus) else -1
-                                if sign_val == sign:
-                                    diff_to_vac = diff_plus if sign == +1 else diff_minus
-                                    group.append((diff_to_vac, d["s0"]))
-                            if group:
-                                s0_pick = min(group, key=lambda t: t[0])[1]
-                                selected.append((n, s0_pick, sign))
-                    else:
-                        s0_pick = min(cands, key=lambda d: abs(d["smax"]))["s0"]
-                        selected.append((n, s0_pick, 0))
-
-                if not selected:
-                    w.writerow([xi_val, f"{lmbda_val:.1e}", f"{nu:.1e}", star_weight, 0, "", "", "", "", "", "", ""])
-                    continue
-
-                for n, s0, vac_sign in selected:
-                    R_star_m = next(d["R_star_m"] for d in per_mode[n] if d["s0"] == s0)
-                    r_star_km = (R_star_m / 1e3) if (R_star_m is not None) else np.nan
-
-                    sol_bnd, _, _ = integrate_star(
-                        s0, p_eqState, rho_eqState, r0, r_max,
-                        xi_val, lmbda_val, nu, rho0, frac_pc, method,
-                        stop_at_2r=False, record_mu2=False,
+                    futures[fut] = (xi_val, lmbda_val)
+                iterator = as_completed(futures)
+                if tqdm is not None:
+                    iterator = tqdm(
+                        iterator,
+                        total=len(futures),
+                        desc=f"ξ-scan {tag}",
+                        unit="pt",
                     )
-                    ADM_mass      = adm_mass_from_sol(sol_bnd, k_tail=15)
-                    scalar_charge = scal_charge_from_sol(sol_bnd, lmbda_val, nu, r_max)
+                for fut in iterator:
+                    xi_hint, l_hint = futures[fut]
+                    try:
+                        xi_ret, l_ret, result = fut.result()
+                        _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+                    except Exception as e:
+                        # Log error and write a non–scalarised row
+                        if tqdm is not None:
+                            tqdm.write(f"[ξ={xi_hint}] error: {e}")
+                        else:
+                            custom_print(f"[ξ={xi_hint}] error: {e}", color="red")
+                        _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
 
-                    w.writerow([
-                        xi_val, f"{lmbda_val:.1e}", f"{nu:.1e}",
-                        star_weight,
-                        1,
-                        n,
-                        vac_sign,
-                        s0 / M,
-                        ADM_mass / SM,
-                        scalar_charge / SM,
-                        (scalar_charge / ADM_mass) if ADM_mass != 0 else np.nan,
-                        r_star_km
-                    ])
+        custom_print(
+            f"Completed ξ–scan for star {tag}. CSV saved to {csv_path}",
+            style="dim",
+        )
 
-            except Exception as e:
-                custom_print(f"[ξ={xi_val}] error: {e}", color="red")
-                w.writerow([xi_val, f"{lmbda_val:.1e}", f"{nu:.1e}", star_weight, 0, "", "", "", "", "", "", ""])
-                continue
+    # ---- λ scan at fixed ξ ----
+    xi_val = xi_fixed_for_lambda_scan
+    for rho0, tag in stars:
+        custom_print(
+            f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
+            style="bold",
+        )
+        out_dir = os.path.join("Results", "scan", tag)
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(
+            out_dir, f"lmbda_scan_xi={xi_val:.0e}_nu={nu_val:.0e}.csv"
+        )
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "xi",
+                    "lambda",
+                    "nu",
+                    "rho0_tag",
+                    "scalarized",
+                    "mode_n",
+                    "vacuum_sign",
+                    "sigma0_over_M",
+                    "ADM_over_Msun",
+                    "Q_over_Msun",
+                    "Q_over_ADM",
+                    "R_star_km",
+                ]
+            )
+            with ProcessPoolExecutor(max_workers=4) as ex:
+                futures = {}
+                for lam_val in lmbda_scan:
+                    fut = ex.submit(
+                        _run_single_point,
+                        params_template,
+                        rho0,
+                        xi_val,
+                        lam_val,
+                        nu_val,
+                        m_val,
+                    )
+                    futures[fut] = (xi_val, lam_val)
+                iterator = as_completed(futures)
+                if tqdm is not None:
+                    iterator = tqdm(
+                        iterator,
+                        total=len(futures),
+                        desc=f"λ-scan {tag}",
+                        unit="pt",
+                    )
+                for fut in iterator:
+                    xi_hint, l_hint = futures[fut]
+                    try:
+                        xi_ret, l_ret, result = fut.result()
+                        _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+                    except Exception as e:
+                        if tqdm is not None:
+                            tqdm.write(f"[λ={l_hint}] error: {e}")
+                        else:
+                            custom_print(f"[λ={l_hint}] error: {e}", color="red")
+                        _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
+        custom_print(
+            f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
+            style="dim",
+        )
 
-    custom_print(f"\nDone in {time.perf_counter() - t0:.1f}s → {out_csv}", style="dim")
 
 if __name__ == "__main__":
-    main()
+    run_scan()

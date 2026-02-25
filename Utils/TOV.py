@@ -2,8 +2,6 @@ from Utils.params import c, M2
 import numpy as np
 import warnings
 
-SAFE_CUTOFF = 1e200
-DENOM_FLOOR = 1e-200  # avoid near-zero divisions
 MAX_EXP_ARG = 700  # exp(700) ~ 1e304, below overflow
 
 warnings.filterwarnings("error", category=RuntimeWarning)
@@ -37,8 +35,6 @@ def initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu):
     eps0 = float(rho0 * c * c)
 
     sigma2, Psi2 = _sigma2_psi2(sigma0, p0, eps0, xi, m2, lmbda, nu)
-    if (not np.isfinite(sigma2)) or (not np.isfinite(Psi2)):
-        return [np.nan, np.nan, np.nan, np.nan]
 
     Phi2 = (
         2 * M2 * Psi2
@@ -97,26 +93,9 @@ def make_tov(
         Maximum exponent allowed in exp(2*Psi) to avoid overflow.
     """
 
-    def _unsafe(x, cutoff=SAFE_CUTOFF):
-        """True if x is non-finite or too large in magnitude."""
-        return (not np.isfinite(x)) or (abs(x) > cutoff)
-
-    def _bad_denom(x):
-        """True if denominator is unsafe or too close to zero."""
-        return _unsafe(x) or (abs(x) < DENOM_FLOOR)
-
     def tov_system(r, y):
         try:
             p, Psi, sigma, dsigma = y
-
-            # -------------------------
-            # Basic state / radius guards
-            # -------------------------
-            if _unsafe(r) or (abs(r) < DENOM_FLOOR):
-                return [np.nan, np.nan, np.nan, np.nan]
-
-            if any(_unsafe(v) for v in (p, Psi, sigma, dsigma)):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # EOS / thermodynamics
@@ -127,48 +106,33 @@ def make_tov(
             else:
                 rho = rho_eqState(p)
                 eps = rho * c * c
-                if any(_unsafe(v) for v in (rho, eps)):
-                    return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # Coupling function and metric factor
             # -------------------------
             F_val = F(sigma, xi)
-            if _unsafe(F_val) or (F_val <= DENOM_FLOOR):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             dFds = dF_dsigma(sigma, xi)
-            if _unsafe(dFds):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             F_prime = dFds * dsigma
-            if _unsafe(F_prime):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # g11 = exp(2Psi), but stop BEFORE overflow
             exponent = 2.0 * Psi
-            if _unsafe(exponent) or (exponent > MAX_EXP_ARG):
+            if exponent > MAX_EXP_ARG:
                 return [np.nan, np.nan, np.nan, np.nan]
 
-            # Very negative exponent is okay (g11 -> 0), unless you want a lower guard too
             g11 = np.exp(exponent)
-            if _unsafe(g11) or (g11 <= 0.0):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # Potential and derivative
             # -------------------------
             V_val = V(sigma, m2, lmbda, nu)
             dV_val = dV_dsigma(sigma, m2, lmbda, nu)
-            if any(_unsafe(v) for v in (V_val, dV_val)):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # dPhi/dr
             # -------------------------
             denom_dPhi = 2.0 * F_val + r * F_prime
-            if _bad_denom(denom_dPhi):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             term_dPhi_num = (
                 F_val * (g11 - 1.0) / r
@@ -176,19 +140,13 @@ def make_tov(
                 + (p - V_val) * r * g11
                 - 2.0 * F_prime
             )
-            if _unsafe(term_dPhi_num):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             dPhi = term_dPhi_num / denom_dPhi
-            if _unsafe(dPhi):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # Psi_bar (auxiliary)
             # -------------------------
             denom_Psi_bar = r * denom_dPhi
-            if _bad_denom(denom_Psi_bar):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # build numerator in pieces for easier guarding/debugging
             num_Psi_bar_1 = (1.0 - g11) * F_val
@@ -197,23 +155,15 @@ def make_tov(
                 + g11 * (eps + V_val)
                 + 0.5 * dsigma**2
             )
-            if any(_unsafe(v) for v in (num_Psi_bar_1, num_Psi_bar_2)):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             Psi_bar = (num_Psi_bar_1 + num_Psi_bar_2) / denom_Psi_bar
-            if _unsafe(Psi_bar):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # d²sigma/dr²
             # -------------------------
             denom_ddsigma = 2.0 * F_val * (F_val + 6.0 * xi**2 * sigma**2)
-            if _bad_denom(denom_ddsigma):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             prefactor_ddsigma = (2.0 * F_val + r * F_prime) / denom_ddsigma
-            if _unsafe(prefactor_ddsigma):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             bracket_1 = F_val * (
                 g11 * dV_val - dPhi * dsigma - 2.0 * dsigma / r + Psi_bar * dsigma
@@ -231,34 +181,21 @@ def make_tov(
                 )
             )
 
-            if any(_unsafe(v) for v in (bracket_1, bracket_2)):
-                return [np.nan, np.nan, np.nan, np.nan]
-
             dd_sigma = prefactor_ddsigma * (bracket_1 - bracket_2)
-            if _unsafe(dd_sigma):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # dPsi/dr
             # -------------------------
             denom_dPsi = denom_dPhi
-            if _bad_denom(denom_dPsi):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             correction_dPsi = (2.0 * r * xi) * sigma * dd_sigma / denom_dPsi
-            if _unsafe(correction_dPsi):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             dPsi = Psi_bar + correction_dPsi
-            if _unsafe(dPsi):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # dp/dr
             # -------------------------
             dp = -(eps + p) * dPhi
-            if _unsafe(dp):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             # -------------------------
             # effective mass squared mu²
@@ -301,8 +238,6 @@ def make_tov(
                 mu2_recorder((r, mu2))
 
             # Final derivative vector
-            if any(_unsafe(v) for v in (dp, dPsi, dsigma, dd_sigma)):
-                return [np.nan, np.nan, np.nan, np.nan]
 
             return [dp, dPsi, dsigma, dd_sigma]
 
@@ -339,14 +274,13 @@ class StoppingConditions:
         return _ev
 
     # Terminate when dynamics become singular/unsafe (prevents stalls)
-    def blowup_guard(self, xi, cutoff=SAFE_CUTOFF):
-        def _ev(r, y):
-            if (not np.isfinite(r)) or (abs(r) > cutoff):
-                return 0.0
+    def blowup_guard(self):
+        def _ev(y):
             for v in y:
-                if (not np.isfinite(v)) or (abs(v) > cutoff):
+                if not np.isfinite(v):
                     return 0.0
             return 1.0
+
         _ev.terminal = True
         _ev.direction = -1
         return _ev
