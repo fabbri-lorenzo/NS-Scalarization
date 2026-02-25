@@ -8,6 +8,8 @@ __pycache__/
 
 # Old files kept for reference
 OLDFILES/
+#Final results that will be used for paper
+Results_final/
 
 # C extensions
 *.so

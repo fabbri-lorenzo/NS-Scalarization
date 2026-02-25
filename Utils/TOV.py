@@ -275,7 +275,8 @@ class StoppingConditions:
 
     # Terminate when dynamics become singular/unsafe (prevents stalls)
     def blowup_guard(self):
-        def _ev(y):
+
+        def _ev(r, y):
             for v in y:
                 if not np.isfinite(v):
                     return 0.0

@@ -413,7 +413,7 @@ def integrate_star(
 
     events = StoppingConditions(p_c, frac_pc)
     ev_surface = events.pressure_limit()
-    ev_blow = events.blowup_guard(xi)
+    ev_blow = events.blowup_guard()
 
     if stop_at_2r:
         ev_2R = events.double_radius()

@@ -144,23 +144,22 @@ def run_scan() -> None:
     """Perform ξ and λ scans for both light and heavy stars."""
     # ----- define the scan ranges -----
     # ξ scan: set the range and step here
-    # xi_min, xi_max, xi_step = -10.0, 10.0, 0.25
-    xi_min, xi_max, xi_step = -10.0, 5, 2.5
+    xi_min, xi_max, xi_step = -10.0, 10.0, 0.25
     # λ scan: list of values to sample; choose logarithmic spacing
     lmbda_scan = [
         0.0,
-        # 1e-76,
+        1e-76,
         1e-74,
-        # 1e-72,
-        # 1e-70,
-        # 1e-68,
-        # 1e-66,
-        # 1e-64,
-        # 1e-62,
-        # 1e-60,
-        # 1e-58,
-        # 1e-56,
-        # 1e-54,
+        1e-72,
+        1e-70,
+        1e-68,
+        1e-66,
+        1e-64,
+        1e-62,
+        1e-60,
+        1e-58,
+        1e-56,
+        1e-54,
         1e-52,
         1e-50,
     ]
@@ -192,7 +191,7 @@ def run_scan() -> None:
 
     # List of stars to scan
     stars = [
-        (rho0_lightS, "L"),
+        # (rho0_lightS, "L"),
         (rho0_heavyS, "H"),
     ]
 
@@ -267,72 +266,72 @@ def run_scan() -> None:
             style="dim",
         )
 
-    # ---- λ scan at fixed ξ ----
-    xi_val = xi_fixed_for_lambda_scan
-    for rho0, tag in stars:
-        custom_print(
-            f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
-            style="bold",
-        )
-        out_dir = os.path.join("Results", "scan", tag)
-        os.makedirs(out_dir, exist_ok=True)
-        csv_path = os.path.join(
-            out_dir, f"lmbda_scan_xi={xi_val:.0e}_nu={nu_val:.0e}.csv"
-        )
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "xi",
-                    "lambda",
-                    "nu",
-                    "rho0_tag",
-                    "scalarized",
-                    "mode_n",
-                    "vacuum_sign",
-                    "sigma0_over_M",
-                    "ADM_over_Msun",
-                    "Q_over_Msun",
-                    "Q_over_ADM",
-                    "R_star_km",
-                ]
-            )
-            with ProcessPoolExecutor(max_workers=4) as ex:
-                futures = {}
-                for lam_val in lmbda_scan:
-                    fut = ex.submit(
-                        _run_single_point,
-                        params_template,
-                        rho0,
-                        xi_val,
-                        lam_val,
-                        nu_val,
-                        m_val,
-                    )
-                    futures[fut] = (xi_val, lam_val)
-                iterator = as_completed(futures)
-                if tqdm is not None:
-                    iterator = tqdm(
-                        iterator,
-                        total=len(futures),
-                        desc=f"λ-scan {tag}",
-                        unit="pt",
-                    )
-                for fut in iterator:
-                    xi_hint, l_hint = futures[fut]
-                    try:
-                        xi_ret, l_ret, result = fut.result()
-                        _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
-                    except Exception as e:
-                        if tqdm is not None:
-                            tqdm.write(f"[λ={l_hint}] error: {e}")
-                        else:
-                            custom_print(f"[λ={l_hint}] error: {e}", color="red")
-                        _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
-        custom_print(
-            f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
-            style="dim",
-        )
+    ## ---- λ scan at fixed ξ ----
+    # xi_val = xi_fixed_for_lambda_scan
+    # for rho0, tag in stars:
+    #    custom_print(
+    #        f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
+    #        style="bold",
+    #    )
+    #    out_dir = os.path.join("Results", "scan", tag)
+    #    os.makedirs(out_dir, exist_ok=True)
+    #    csv_path = os.path.join(
+    #        out_dir, f"lmbda_scan_xi={xi_val:.0e}_nu={nu_val:.0e}.csv"
+    #    )
+    #    with open(csv_path, "w", newline="") as f:
+    #        writer = csv.writer(f)
+    #        writer.writerow(
+    #            [
+    #                "xi",
+    #                "lambda",
+    #                "nu",
+    #                "rho0_tag",
+    #                "scalarized",
+    #                "mode_n",
+    #                "vacuum_sign",
+    #                "sigma0_over_M",
+    #                "ADM_over_Msun",
+    #                "Q_over_Msun",
+    #                "Q_over_ADM",
+    #                "R_star_km",
+    #            ]
+    #        )
+    #        with ProcessPoolExecutor(max_workers=4) as ex:
+    #            futures = {}
+    #            for lam_val in lmbda_scan:
+    #                fut = ex.submit(
+    #                    _run_single_point,
+    #                    params_template,
+    #                    rho0,
+    #                    xi_val,
+    #                    lam_val,
+    #                    nu_val,
+    #                    m_val,
+    #                )
+    #                futures[fut] = (xi_val, lam_val)
+    #            iterator = as_completed(futures)
+    #            if tqdm is not None:
+    #                iterator = tqdm(
+    #                    iterator,
+    #                    total=len(futures),
+    #                    desc=f"λ-scan {tag}",
+    #                    unit="pt",
+    #                )
+    #            for fut in iterator:
+    #                xi_hint, l_hint = futures[fut]
+    #                try:
+    #                    xi_ret, l_ret, result = fut.result()
+    #                    _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+    #                except Exception as e:
+    #                    if tqdm is not None:
+    #                        tqdm.write(f"[λ={l_hint}] error: {e}")
+    #                    else:
+    #                        custom_print(f"[λ={l_hint}] error: {e}", color="red")
+    #                    _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
+    #    custom_print(
+    #        f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
+    #        style="dim",
+    #    )
 
 
 if __name__ == "__main__":

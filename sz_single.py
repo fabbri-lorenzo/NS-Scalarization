@@ -100,7 +100,7 @@ def main() -> None:
         # Skip plotting if no scalarized solutions were found
         if not plot_entries or not path:
             custom_print(
-                f"No scalarized solutions for {label} star — skipping plots.",
+                f"No scalarized solutions for {label} star.",
                 color="yellow",
             )
             continue

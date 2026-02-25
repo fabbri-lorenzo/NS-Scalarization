@@ -370,7 +370,7 @@ def diagnostic_scan(
     expand_coarse_points=1,
     detect_near_zero=True,
     near_zero_factor=5.0,
-    compress_brackets=True,
+    compress_brackets=False,
     compress_tol=None,
     parallel=False,
     max_workers=None,
