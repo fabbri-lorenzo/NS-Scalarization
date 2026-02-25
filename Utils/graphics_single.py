@@ -122,13 +122,13 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel("r [Km]")
     plt.xlim(left=0)
-    plt.ylabel("P (Pa)")
+    plt.ylabel("P [Pa]")
     plt.grid(False)
     plt.legend()
     plt.title("Pressure")
     plt.tight_layout()
     plt.savefig(savepath + "pressure.png", dpi=dpi_val)
-    plt.show()
+    # plt.show()
 
     # --- Effective mass squared profile (uniform resample of logged points) ---
     plt.figure()
@@ -168,14 +168,14 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
     )
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xlabel("r [Km]")
-    plt.ylabel(r"$\mu_{\rm eff}^2$ (Km$^{-2}$)")
+    plt.ylabel(r"$\mu_{\rm eff}^2$ [Km$^{-2}$]")
     plt.xlim(left=0)
     plt.title("Effective mass squared")
     plt.grid(False)
     plt.legend()
     plt.tight_layout()
     plt.savefig(savepath + "mu2.png", dpi=dpi_val, bbox_inches="tight")
-    plt.show()
+    # plt.show()
 
     # --- Scalar field σ(r) ---
     plt.figure()
@@ -206,7 +206,7 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
     plt.title("Scalar field")
     plt.tight_layout()
     plt.savefig(savepath + "sigma.png", dpi=dpi_val)
-    plt.show()
+    # plt.show()
 
     ## --- Normalized scalar field ---
     # plt.figure()

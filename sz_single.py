@@ -7,7 +7,7 @@ import traceback
 
 from Utils.params import M, SM, rho0_lightS, rho0_heavyS, lmbda_to_SI, m_ev_to_SI
 from Utils.EOS import p_SLy4, rho_SLy4
-from Utils.graphics import plotResults_multi, custom_print
+from Utils.graphics_single import plotResults_multi, custom_print
 from Utils.shooting import (
     diagnostic_scan,
     probe_brackets,
@@ -24,10 +24,10 @@ p_eqState = p_SLy4
 rho_eqState = rho_SLy4  
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
-xi = 2
+xi = 4.4
 
 # m_val = 0.0
-m = 1e-20
+m = 0.0
 
 lmbda = 0.0
 # lmbda = 1e-40
@@ -35,10 +35,10 @@ lmbda = 0.0
 nu = 0.0
 # nu = M * 1e-6
 
-method = "BDF" if (xi < 0.0 or lmbda > 1e-40 or nu > M * 1e-1) else "RK45"
+method = "BDF" if (xi <= 0.0 or lmbda > 1e-40 or nu > M * 0.1 or m >= 1e-11) else "RK45"
 
 # Shooting method parameters
-a, b = 1e-10 * M, 10 * M  #  Bracket for σ0
+a, b = 1e-10 * M, M  #  Bracket for σ0
 target_shooting = [0.0] if nu == 0.0 else [abs(nu), -abs(nu)]
 
 abs_cut = a * 1e-2
@@ -74,8 +74,6 @@ def run_solve_model_captured(rho0):
 
 
 def solve_model(rho0):
-    t0 = time.perf_counter()
-
     star_weight, sw = "", ""
 
     if rho0 == rho0_lightS:
@@ -138,8 +136,6 @@ def solve_model(rho0):
             "No promising brackets found in the given range. Scalarization does not occur here.",
             color="magenta",
         )
-        t_tot = time.perf_counter() - t0
-        custom_print(f"\nExecution time: {t_tot:.0f} s", style="dim")
         return None
 
     # --- 1) Find ALL σ0 roots (absolute-first, then relative) ---
@@ -354,14 +350,13 @@ def solve_model(rho0):
                 }
             )
 
-    t_tot = time.perf_counter() - t0
-    custom_print(f"\nExecution time: {t_tot:.0f} s", style="dim")
-
     # --- 5) Plots
     plotResults_multi(plot_entries, nu_val,vacuum_sols, path)
 
 
 def main():
+    t0 = time.perf_counter()
+
     jobs = [rho0_lightS, rho0_heavyS]
 
     with ProcessPoolExecutor(max_workers=2) as ex:
@@ -369,6 +364,8 @@ def main():
             # parent prints in-order, no interleaving
             custom_print(f"\n===== {label} star log (ok={ok}) =====", style="bold")
             print(out, end="")
+    t_tot = time.perf_counter() - t0
+    custom_print(f"\nExecution time: {t_tot:.0f} s", style="dim")
 
 
 if __name__ == "__main__":

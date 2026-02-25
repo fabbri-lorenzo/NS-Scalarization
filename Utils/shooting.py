@@ -2,8 +2,93 @@ import numpy as np
 from Utils.params import c, M
 from Utils.TOV import _sigma2_psi2
 from Utils.analysis import integrate_star
-from Utils.graphics import custom_print
+from Utils.graphics_single import custom_print
 from scipy.optimize import brentq
+from concurrent.futures import ThreadPoolExecutor
+import os
+
+
+def _sigma_residual_worker(args):
+    """Worker for parallel evaluation of sigma_residual across a grid.
+
+    Parameters are packed to satisfy the pickler used by ThreadPoolExecutor.
+    On failure the worker returns NaN for the residual.
+    """
+    (
+        s,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi,
+        m2,
+        lmbda,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        idx_sigma,
+        target,
+    ) = args
+    try:
+        return sigma_residual(
+            float(s),
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi,
+            m2,
+            lmbda,
+            nu_val,
+            rho0,
+            frac_pc,
+            method,
+            idx_sigma=idx_sigma,
+            target=target,
+        )
+    except Exception:
+        return np.nan
+
+
+def _bracket_root_worker(args):
+    """Worker for parallel evaluation of find_root_brent across brackets.
+    This simply wraps find_root_brent with its arguments.
+    """
+    (
+        u,
+        v,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi_val,
+        m2_val,
+        lmbda_val,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        idx_sigma,
+        target,
+    ) = args
+    return find_root_brent(
+        u,
+        v,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi_val,
+        m2_val,
+        lmbda_val,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        idx_sigma=idx_sigma,
+        target=target,
+    )
 
 
 def sigma_residual(
@@ -117,29 +202,65 @@ def _eval_sigma_residuals_on_grid(
     frac_pc,
     method,
     target=0.0,
+    *,
+    parallel=False,
+    max_workers=None,
+    idx_sigma=2,
 ):
-    """Evaluate sigma_residual on an array of s0 values, returning F (NaN on failure)."""
+    """Evaluate sigma_residual on an array of s0 values, returning F.
+
+    If ``parallel`` is True, this will evaluate the residuals concurrently
+    using a ThreadPoolExecutor. Each call to ``sigma_residual`` is independent,
+    so the speedup can be significant when the integrator is expensive.
+    On failure the residual value is set to NaN.
+    """
+    if not parallel:
+        F = np.empty(len(S), dtype=float)
+        for i, s in enumerate(S):
+            try:
+                F[i] = sigma_residual(
+                    float(s),
+                    r0,
+                    r_max,
+                    p_eqState,
+                    rho_eqState,
+                    xi,
+                    m2,
+                    lmbda,
+                    nu_val,
+                    rho0,
+                    frac_pc,
+                    method,
+                    idx_sigma=idx_sigma,
+                    target=target,
+                )
+            except Exception:
+                F[i] = np.nan
+        return F
+    # parallel case
+    tasks = [
+        (
+            float(s),
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi,
+            m2,
+            lmbda,
+            nu_val,
+            rho0,
+            frac_pc,
+            method,
+            idx_sigma,
+            target,
+        )
+        for s in S
+    ]
     F = np.empty(len(S), dtype=float)
-    for i, s in enumerate(S):
-        try:
-            F[i] = sigma_residual(
-                float(s),
-                r0,
-                r_max,
-                p_eqState,
-                rho_eqState,
-                xi,
-                m2,
-                lmbda,
-                nu_val,
-                rho0,
-                frac_pc,
-                method,
-                idx_sigma=2,
-                target=target,
-            )
-        except Exception:
-            F[i] = np.nan
+    with ThreadPoolExecutor(max_workers=max_workers or os.cpu_count()) as executor:
+        for i, res in enumerate(executor.map(_sigma_residual_worker, tasks)):
+            F[i] = res
     return F
 
 
@@ -160,7 +281,6 @@ def _detect_brackets_from_grid(S, F):
             score = float(min(abs(f1), abs(f2)))
             brackets.append((float(S[i]), float(S[i + 1]), score))
     return brackets
-
 
 def _merge_index_ranges(ranges, n_points, expand_points=0):
     """
@@ -189,7 +309,6 @@ def _merge_index_ranges(ranges, n_points, expand_points=0):
             cur_a, cur_b = a, b
     out.append((cur_a, cur_b))
     return out
-
 
 def _compress_brackets_by_center(brackets, cluster_tol):
     """
@@ -253,6 +372,8 @@ def diagnostic_scan(
     near_zero_factor=5.0,
     compress_brackets=True,
     compress_tol=None,
+    parallel=False,
+    max_workers=None,
 ):
     """
     Multi-resolution diagnostic scan:
@@ -260,6 +381,14 @@ def diagnostic_scan(
       2) Identify promising regions (sign changes + optional near-zero local minima)
       3) Refine only those regions
       4) Return refined brackets (optionally compressed)
+
+    Parameters
+    ----------
+    parallel : bool, optional
+        If True, evaluates the residuals on the coarse and refined grids concurrently.
+        This can reduce wall-clock time when ``sigma_residual`` is expensive.
+    max_workers : int or None, optional
+        Maximum number of worker threads used when ``parallel`` is True.
 
     Returns
     -------
@@ -292,6 +421,9 @@ def diagnostic_scan(
         frac_pc,
         method,
         target=target,
+        parallel=parallel,
+        max_workers=max_workers,
+        idx_sigma=2,
     )
 
     # --- 2) find promising coarse ranges (as point-index ranges) ---
@@ -374,6 +506,9 @@ def diagnostic_scan(
             frac_pc,
             method,
             target=target,
+            parallel=parallel,
+            max_workers=max_workers,
+            idx_sigma=2,
         )
 
         local_brackets = _detect_brackets_from_grid(S_loc, F_loc)
@@ -480,7 +615,6 @@ def find_root_brent(
     except Exception:
         return None, None, None, None
 
-
 def residual_accept(sigma_rmax, sigma0, target, abs_threshold, tol_relative):
     """
     Check whether the residual at r_max is acceptable given the target.
@@ -502,7 +636,6 @@ def residual_accept(sigma_rmax, sigma0, target, abs_threshold, tol_relative):
             return True, "rel"
 
     return False, None
-
 
 def _nearest_target_value(sigma_rmax, target):
     """Return the scalar target t* in `target` closest to sigma_rmax."""
@@ -534,11 +667,21 @@ def probe_brackets(
     merge_tol,
     target=0.0,
     idx_sigma: int = 2,
+    *,
+    parallel=False,
+    max_workers=None,
 ):
     """
     Probe each sign-change bracket and return (s0_list, sigma_end_list), where
     sigma_end_list contains σ(r_max) (not residuals). Near-duplicates are
     merged within each vacuum branch when ν≠0.
+
+    Parameters
+    ----------
+    parallel : bool, optional
+        If True, find_root_brent is invoked concurrently for each bracket.
+    max_workers : int or None, optional
+        Maximum number of worker threads used when ``parallel`` is True.
     """
     candidates = []
     residuals = []  # |σ(r_max) - t_eff|
@@ -548,29 +691,13 @@ def probe_brackets(
     p0 = float(p_eqState(rho0))
     eps0 = float(rho0 * c * c)
 
-    for u, v in brackets:
-        s_star, delta, sigma_end, t_eff = find_root_brent(
-            u,
-            v,
-            r0,
-            r_max,
-            p_eqState,
-            rho_eqState,
-            xi_val,
-            m2_val,
-            lmbda_val,
-            nu_val,
-            rho0,
-            frac_pc,
-            method,
-            idx_sigma=idx_sigma,
-            target=target,
-        )
+    # Helper to process the result for a single bracket
+    def process_result(u, v, s_star, delta, sigma_end, t_eff):
         if s_star is None or (not np.isfinite(delta)):
             custom_print(
                 f"[brent] bracket [{u/M:.3e},{v/M:.3e}] → FAILED", color="yellow"
             )
-            continue
+            return
         m0 = float(np.sqrt(max(0.0, m2_val)))
         m_vac_sq = float(m2_val + 2.0 * lmbda_val * (nu_val**2))
 
@@ -620,6 +747,56 @@ def probe_brackets(
                 color="red",
             )
 
+    if not parallel:
+        # serial evaluation
+        for u, v in brackets:
+            s_star, delta, sigma_end, t_eff = find_root_brent(
+                u,
+                v,
+                r0,
+                r_max,
+                p_eqState,
+                rho_eqState,
+                xi_val,
+                m2_val,
+                lmbda_val,
+                nu_val,
+                rho0,
+                frac_pc,
+                method,
+                idx_sigma=idx_sigma,
+                target=target,
+            )
+            process_result(u, v, s_star, delta, sigma_end, t_eff)
+    else:
+        # parallel evaluation: dispatch each bracket concurrently
+        tasks = [
+            (
+                u,
+                v,
+                r0,
+                r_max,
+                p_eqState,
+                rho_eqState,
+                xi_val,
+                m2_val,
+                lmbda_val,
+                nu_val,
+                rho0,
+                frac_pc,
+                method,
+                idx_sigma,
+                target,
+            )
+            for (u, v) in brackets
+        ]
+        with ThreadPoolExecutor(max_workers=max_workers or os.cpu_count()) as executor:
+            for (u, v), result in zip(
+                brackets, executor.map(_bracket_root_worker, tasks)
+            ):
+                s_star, delta, sigma_end, t_eff = result
+                process_result(u, v, s_star, delta, sigma_end, t_eff)
+
     if merge_tol is not None and merge_tol > 0 and len(candidates) > 1:
         grouped = {}
         for s0, res, se, vs in zip(candidates, residuals, sigma_ends, vac_signs):
@@ -629,16 +806,16 @@ def probe_brackets(
         for vs, group in grouped.items():
             group_sorted = sorted(group, key=lambda x: abs(x[0]))
             cur_s0, cur_r, cur_se = group_sorted[0]
-            for s0, r0, se in group_sorted[1:]:
+            for s0, r0_c, se in group_sorted[1:]:
                 if abs(s0 - cur_s0) <= merge_tol:
-                    if r0 < cur_r:
-                        cur_s0, cur_r, cur_se = s0, r0, se
+                    if r0_c < cur_r:
+                        cur_s0, cur_r, cur_se = s0, r0_c, se
                 else:
                     merged_c.append(cur_s0)
                     merged_r.append(cur_r)
                     merged_se.append(cur_se)
                     merged_v.append(vs)
-                    cur_s0, cur_r, cur_se = s0, r0, se
+                    cur_s0, cur_r, cur_se = s0, r0_c, se
             merged_c.append(cur_s0)
             merged_r.append(cur_r)
             merged_se.append(cur_se)

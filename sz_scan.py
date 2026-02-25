@@ -1,11 +1,10 @@
-# scan_xi.py
 import os, csv, time
 import numpy as np
 from tqdm import tqdm  
 
 from Utils.params import M, SM, rho0_lightS, rho0_heavyS, lmbda_to_SI
 from Utils.EOS import p_SLy4, rho_SLy4
-from Utils.graphics import custom_print
+from Utils.graphics_single import custom_print
 from Utils.shooting import diagnostic_scan, probe_brackets
 from Utils.analysis import integrate_star, node_count_to_2R, adm_mass_from_sol, scal_charge_from_sol
 
@@ -16,11 +15,11 @@ frac_pc     = 1e-10
 rho0        = rho0_lightS
 r0, r_max   = 1e-2, 3e5
 
-#xi_min, xi_max, xi_step = -1, 1, 0.05
+# xi_min, xi_max, xi_step = -1, 1, 0.05
 xi_min, xi_max, xi_step = -100, 100, 1
 lmbda = 1/M**2.2
 nu   = 1e-5*M
-#nu   = 246.0 * 9.0 * 1e2
+# nu   = 246.0 * 9.0 * 1e2
 
 N_efolds = 55
 

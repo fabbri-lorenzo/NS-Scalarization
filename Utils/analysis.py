@@ -1,6 +1,6 @@
 from scipy.integrate import solve_ivp
 import numpy as np
-from Utils.TOV import initial_conditions, make_tov_EMG, StoppingConditions
+from Utils.TOV import initial_conditions, make_tov, StoppingConditions
 from Utils.params import c, G_N
 
 
@@ -385,6 +385,7 @@ def integrate_star(
     record_mu2=False,
 ):
     r_span = (r0, r_max)
+
     y0 = initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu)
 
     # If the center expansion is invalid (NaNs), return a minimal stub result.
@@ -404,11 +405,11 @@ def integrate_star(
 
     mu2_log = []
     if record_mu2:
-        tov = make_tov_EMG(
+        tov = make_tov(
             p_c, frac_pc, rho_eqState, xi, m2, lmbda, nu, mu2_recorder=mu2_log.append
         )
     else:
-        tov = make_tov_EMG(p_c, frac_pc, rho_eqState, xi, m2, lmbda, nu)
+        tov = make_tov(p_c, frac_pc, rho_eqState, xi, m2, lmbda, nu)
 
     events = StoppingConditions(p_c, frac_pc)
     ev_surface = events.pressure_limit()
