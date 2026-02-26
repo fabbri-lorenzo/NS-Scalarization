@@ -37,7 +37,7 @@ frac_pc = 1e-10  # Fraction of p_c to stop integration
 # Physical couplings
 xi = 100
 m = 0.0  # scalar mass (eV)
-lmbda = 1e-76  # self–coupling (dimensionless)
+lmbda = 0.0  # self–coupling (dimensionless)
 nu = 0.0  # vacuum expectation value
 
 # Choose integrator method based on parameter regime

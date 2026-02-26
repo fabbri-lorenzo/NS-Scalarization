@@ -586,9 +586,6 @@ def find_root_brent(
 
     try:
         s_star = brentq(f, float(u), float(v), rtol=rtol, maxiter=maxiter)
-        # Enforce σ0 ≥ 0 if the root is negative
-        if s_star < 0.0:
-            s_star = abs(s_star)
         # one more eval to get (sigma_end, t_eff) without a second integrate later
         delta, sigma_end, t_eff = sigma_residual(
             s_star,
@@ -695,42 +692,97 @@ def probe_brackets(
                 f"[brent] bracket [{u/M:.3e},{v/M:.3e}] → FAILED", color="yellow"
             )
             return
+
+        # ----------------------------
+        # Canonicalize to positive σ0
+        # ----------------------------
+        s0_phys = float(s_star)
+        s0_pos = float(abs(s0_phys))
+
+        if s0_phys < 0.0:
+            # Recompute diagnostics at +|σ0| so (σ0, delta, sigma_end, t_eff) match.
+            delta_p, sigma_end_p, t_eff_p = sigma_residual(
+                s0_pos,
+                r0,
+                r_max,
+                p_eqState,
+                rho_eqState,
+                xi_val,
+                m2_val,
+                lmbda_val,
+                nu_val,
+                rho0,
+                frac_pc,
+                method=method,
+                idx_sigma=idx_sigma,
+                target=target,
+                return_details=True,
+            )
+            # If symmetry is truly exact, this should be valid.
+            # Still guard numerically.
+            if not np.isfinite(delta_p):
+                custom_print(
+                    f"[canon] σ0={s0_phys/M:.3e} → +|σ0| failed (NaN residual); keeping original",
+                    color="yellow",
+                )
+                s0_use, delta_use, sigma_end_use, t_eff_use = (
+                    s0_phys,
+                    float(delta),
+                    float(sigma_end),
+                    float(t_eff),
+                )
+            else:
+                s0_use, delta_use, sigma_end_use, t_eff_use = (
+                    s0_pos,
+                    float(delta_p),
+                    float(sigma_end_p),
+                    float(t_eff_p),
+                )
+        else:
+            s0_use, delta_use, sigma_end_use, t_eff_use = (
+                s0_pos,
+                float(delta),
+                float(sigma_end),
+                float(t_eff),
+            )
+
+        # ----------------------------
+        # Acceptance test (unchanged)
+        # ----------------------------
         m0 = float(np.sqrt(max(0.0, m2_val)))
         m_vac_sq = float(m2_val + 2.0 * lmbda_val * (nu_val**2))
-
         uses_robin = ((nu_val == 0.0) and (m0 > 0.0)) or (
             (nu_val != 0.0) and (m_vac_sq > 0.0)
         )
 
         if uses_robin:
-            # accept based on Robin residual (delta)
-            accept = (abs(delta) <= abs_threshold) or (
-                abs(s_star) > 0.0 and abs(delta) / abs(s_star) <= tol_relative
+            accept = (abs(delta_use) <= abs_threshold) or (
+                abs(s0_use) > 0.0 and abs(delta_use) / abs(s0_use) <= tol_relative
             )
             reason = "robin"
         else:
-            # fallback (pure quartic/log tail, or non-Yukawa asymptotics)
             accept, reason = residual_accept(
-                sigma_rmax=sigma_end,
-                sigma0=s_star,
-                target=t_eff,
+                sigma_rmax=sigma_end_use,
+                sigma0=s0_use,
+                target=t_eff_use,
                 abs_threshold=abs_threshold,
                 tol_relative=tol_relative,
             )
 
-        _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, m2_val, lmbda_val, nu_val)
+        # NOTE: psi2 should be computed at the *canonical* σ0 you will store
+        _, psi2 = _sigma2_psi2(s0_use, p0, eps0, xi_val, m2_val, lmbda_val, nu_val)
         psi_ok = np.isfinite(psi2) and (psi2 > 0.0)
 
         if accept and psi_ok:
             custom_print(
-                f"ACCEPT σ0/M={s_star/M:.6e}  |residual|/M={abs(delta)/M:.3e}  Ψ2={psi2:.3e}  via={reason}",
+                f"ACCEPT σ0/M={s0_use/M:.6e}  |residual|/M={abs(delta_use)/M:.3e}  Ψ2={psi2:.3e}  via={reason}",
                 color="green",
             )
-            candidates.append(float(s_star))
-            residuals.append(float(abs(delta)))
-            sigma_ends.append(float(sigma_end))
+            candidates.append(float(s0_use))  # <-- always positive now
+            residuals.append(float(abs(delta_use)))
+            sigma_ends.append(float(sigma_end_use))
             if nu_val != 0.0:
-                vac_signs.append(1 if t_eff >= 0 else -1)
+                vac_signs.append(1 if t_eff_use >= 0 else -1)
             else:
                 vac_signs.append(0)
         else:
@@ -740,7 +792,7 @@ def probe_brackets(
             if not psi_ok:
                 why.append(f"Ψ2≤0 (Ψ2={psi2:.3e})")
             custom_print(
-                f"REJECT σ0/M={s_star/M:.6e}  |residual|/M={abs(delta)/M:.3e} → {'; '.join(why) if why else 'unknown'}",
+                f"REJECT σ0/M={s0_use/M:.6e}  |residual|/M={abs(delta_use)/M:.3e} → {'; '.join(why) if why else 'unknown'}",
                 color="red",
             )
 
@@ -801,7 +853,7 @@ def probe_brackets(
 
         merged_c, merged_r, merged_se, merged_v = [], [], [], []
         for vs, group in grouped.items():
-            group_sorted = sorted(group, key=lambda x: abs(x[0]))
+            group_sorted = sorted(group, key=lambda x: x[0])
             cur_s0, cur_r, cur_se = group_sorted[0]
             for s0, r0_c, se in group_sorted[1:]:
                 if abs(s0 - cur_s0) <= merge_tol:
@@ -828,7 +880,7 @@ def probe_brackets(
     if not candidates:
         return [], []
 
-    order = np.argsort(np.abs(candidates))
+    order = np.argsort(candidates)
     s0_sorted = [candidates[i] for i in order]
     sigma_end_sorted = [sigma_ends[i] for i in order]
     return s0_sorted, sigma_end_sorted
