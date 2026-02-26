@@ -21,6 +21,7 @@ import csv
 import io
 import contextlib
 import traceback
+import sys
 from typing import Dict, Any, Tuple, List
 
 import numpy as np
@@ -28,7 +29,7 @@ import numpy as np
 from Utils.params import M, SM, rho0_lightS, rho0_heavyS, lmbda_to_SI, m_ev_to_SI
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics_single import custom_print
-from Utils.shooting import diagnostic_scan, probe_brackets
+from Utils.shooting import diagnostic_scan_with_timeout, diagnostic_scan, probe_brackets
 from Utils.analysis import (
     integrate_star,
     node_count_to_2R,
@@ -136,25 +137,77 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
     r0 = 1e-2  # m
     r_max = 3e5  # m
 
+    # custom_print("[STAGE] entering diagnostic_scan", color="yellow")
+
     # ---------- 1) adaptive diagnostic scan ----------
-    scan = diagnostic_scan(
-        r0=r0,
-        r_max=r_max,
-        p_eqState=p_eqState,
-        rho_eqState=rho_eqState,
-        xi=xi_val,
-        m2=m2_val,
-        lmbda=lmbda_val_SI,
-        nu_val=nu_val,
-        rho0=rho0,
-        frac_pc=frac_pc,
-        method=method,
-        a=a,
-        b=b,
-        n_coarse=101,
-        n_refine=50,
-        target=target_shooting,
-    )
+    diag_timeout_sec = float(params.get("diagnostic_timeout_sec", 90.0))
+    if method == "RK45":
+        try:
+            scan = diagnostic_scan_with_timeout(
+                diag_timeout_sec,
+                r0=r0,
+                r_max=r_max,
+                p_eqState=p_eqState,
+                rho_eqState=rho_eqState,
+                xi=xi_val,
+                m2=m2_val,
+                lmbda=lmbda_val_SI,
+                nu_val=nu_val,
+                rho0=rho0,
+                frac_pc=frac_pc,
+                method=method,
+                a=a,
+                b=b,
+                n_coarse=101,
+                n_refine=50,
+                target=target_shooting,
+            )
+        except TimeoutError:
+            custom_print(
+                f"[WARN] diagnostic_scan exceeded {diag_timeout_sec:.0f}s (method={method}); retrying with BDF.",
+                color="yellow",
+                stream=sys.__stdout__,
+            )
+
+        scan = diagnostic_scan_with_timeout(
+            diag_timeout_sec,
+            r0=r0,
+            r_max=r_max,
+            p_eqState=p_eqState,
+            rho_eqState=rho_eqState,
+            xi=xi_val,
+            m2=m2_val,
+            lmbda=lmbda_val_SI,
+            nu_val=nu_val,
+            rho0=rho0,
+            frac_pc=frac_pc,
+            method="BDF",  # force stiff solver on retry
+            a=a,
+            b=b,
+            n_coarse=101,
+            n_refine=50,
+            target=target_shooting,
+        )
+    else:
+        scan = diagnostic_scan(
+            r0=r0,
+            r_max=r_max,
+            p_eqState=p_eqState,
+            rho_eqState=rho_eqState,
+            xi=xi_val,
+            m2=m2_val,
+            lmbda=lmbda_val_SI,
+            nu_val=nu_val,
+            rho0=rho0,
+            frac_pc=frac_pc,
+            method=method,
+            a=a,
+            b=b,
+            n_coarse=101,
+            n_refine=50,
+            target=target_shooting,
+        )
+
     brackets = scan["brackets"]
     F_coarse = scan["F_coarse"]
     custom_print(
@@ -195,7 +248,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         merge_tol=merge_tol,
         target=target_shooting,
         idx_sigma=2,
-        parallel=True,
+        parallel=False,
     )
     if not s0_list:
         raise RuntimeError("No σ₀ roots found; see diagnostics above.")
@@ -429,10 +482,10 @@ def run_solve_model_captured(
     buf = io.StringIO()
     ok = True
     result: Dict[str, Any] | None = None
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-        try:
-            result = solve_model(params, rho0)
-        except Exception:
-            ok = False
-            traceback.print_exc()
+    # with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+    try:
+        result = solve_model(params, rho0)
+    except Exception:
+        ok = False
+        traceback.print_exc()
     return label, buf.getvalue(), ok, result

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, List, Sequence, Tuple
@@ -8,11 +9,10 @@ from typing import Callable, List, Sequence, Tuple
 import numpy as np
 from scipy.optimize import brentq, minimize_scalar
 
+from Utils.graphics_single import custom_print
 from Utils.params import M, c
 from Utils.TOV import _sigma2_psi2
 from Utils.analysis import integrate_star
-from Utils.graphics_single import custom_print
-
 
 # ----------------------------
 # Core residual (same semantics as before)
@@ -90,6 +90,11 @@ def sigma_residual(
         arr = np.asarray(target, dtype=float)
         t_eff = float(arr[np.nanargmin(np.abs(arr - sigma_end))])
     delta = sigma_end - t_eff
+    # near the end of sigma_residual
+    # custom_print(
+    #    f"s0={s0/M:.3e} M, sigma(r_max)={sigma_end:.3e}, sp(r_max)={sp_end:.3e}",
+    #    color="yellow",
+    # )
     return (delta, sigma_end, t_eff) if return_details else delta
 
 
@@ -134,6 +139,8 @@ def _eval_sigma_residuals_on_grid(
     parallel: bool = False,
     max_workers: int | None = None,
     idx_sigma: int = 2,
+    deadline: float | None = None,
+    stage: str = "diagnostic",
 ) -> np.ndarray:
     S = np.asarray(S, dtype=float)
     F = np.empty_like(S, dtype=float)
@@ -164,9 +171,13 @@ def _eval_sigma_residuals_on_grid(
     if parallel:
         with ThreadPoolExecutor(max_workers=max_workers or (os.cpu_count() or 8)) as ex:
             for i, val in enumerate(ex.map(worker, S)):
+                if deadline is not None and time.monotonic() > deadline:
+                    raise TimeoutError(f"{stage} scan exceeded time limit; aborting")
                 F[i] = val
     else:
         for i, s0 in enumerate(S):
+            if deadline is not None and time.monotonic() > deadline:
+                raise TimeoutError(f"{stage} scan exceeded time limit; aborting")
             F[i] = worker(float(s0))
     return F
 
@@ -313,6 +324,7 @@ def diagnostic_scan(
     max_workers: int | None = None,
     compress_brackets: bool = True,
     compress_tol: float | None = None,
+    timeout_sec: float | None = None,
 ) -> dict:
     """
     Multi-resolution scan on the positive domain [a,b], with a>0.
@@ -323,6 +335,14 @@ def diagnostic_scan(
       - "S_refined","F_refined"
       - "regions": list[(sL,sR)] refined regions
     """
+    t_start = time.perf_counter()
+
+    def _check_timeout():
+        if timeout_sec is not None and (time.perf_counter() - t_start) > float(
+            timeout_sec
+        ):
+            raise TimeoutError(f"diagnostic_scan exceeded {timeout_sec}s")
+
     n_coarse = int(n_coarse)
     n_refine = int(n_refine)
     if n_coarse < 3:
@@ -335,8 +355,14 @@ def diagnostic_scan(
     if not (0.0 < a < b):
         raise ValueError("Require 0 < a < b for positive-only scanning")
 
+    deadline = (
+        time.monotonic() + float(timeout_sec) if timeout_sec is not None else None
+    )
+
     # --- 1) coarse scan ---
-    S_coarse = np.linspace(a, b, n_coarse, endpoint=True)
+    S1 = np.geomspace(a, min(b, 1e-2 * M), n_coarse // 2)
+    S2 = np.linspace(min(b, 1e-2 * M), b, n_coarse - len(S1))
+    S_coarse = np.unique(np.concatenate([S1, S2]))
     F_coarse = _eval_sigma_residuals_on_grid(
         S_coarse,
         r0,
@@ -354,7 +380,10 @@ def diagnostic_scan(
         parallel=parallel,
         max_workers=max_workers,
         idx_sigma=2,
+        deadline=deadline,
+        stage="coarse",
     )
+    _check_timeout()
 
     # --- 2) candidate coarse ranges ---
     cand = _candidate_ranges_from_grid(
@@ -383,6 +412,8 @@ def diagnostic_scan(
     regions: List[Tuple[float, float]] = []
 
     for i0, i1 in merged:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("diagnostic scan exceeded time limit; aborting")
         sL = float(S_coarse[i0])
         sR = float(S_coarse[i1])
         if sR <= sL:
@@ -405,6 +436,8 @@ def diagnostic_scan(
             parallel=parallel,
             max_workers=max_workers,
             idx_sigma=2,
+            deadline=deadline,
+            stage="refine",
         )
         refined_scored.extend(_detect_brackets_from_grid(S_loc, F_loc))
         S_refined_all.append(S_loc)
@@ -432,7 +465,9 @@ def diagnostic_scan(
         brackets = [(u, v) for (u, v, _s) in refined_scored]
 
     brackets = sorted(brackets, key=lambda uv: 0.5 * (uv[0] + uv[1]))
-
+    # after computing F_coarse in diagnostic_scan
+    for s, f in zip(S_coarse, F_coarse):
+        custom_print(f"S/M={s/M:.2e}, residual={f:.3e}", color="gray")
     return {
         "brackets": brackets,
         "S_coarse": S_coarse,
@@ -446,7 +481,7 @@ def diagnostic_scan(
 # ----------------------------
 # Positive-only root finding + probing
 # ----------------------------
-def find_root_brent_positive(
+def find_root_brent(
     u: float,
     v: float,
     r0: float,
@@ -520,7 +555,7 @@ def find_root_brent_positive(
         return None, None, None, None
 
 
-def _minimize_residual_positive(
+def _minimize_residual(
     u: float,
     v: float,
     r0: float,
@@ -673,7 +708,7 @@ def probe_brackets(
             )
 
     def process_one(u: float, v: float):
-        s_star, delta, sigma_end, t_eff = find_root_brent_positive(
+        s_star, delta, sigma_end, t_eff = find_root_brent(
             u,
             v,
             r0,
@@ -691,7 +726,7 @@ def probe_brackets(
             target=target,
         )
         if (s_star is None) and allow_minimize_fallback:
-            s_star, delta, sigma_end, t_eff = _minimize_residual_positive(
+            s_star, delta, sigma_end, t_eff = _minimize_residual(
                 u,
                 v,
                 r0,
@@ -762,3 +797,41 @@ def probe_brackets(
     s0_sorted = [candidates[i] for i in order]
     sigma_end_sorted = [sigma_ends[i] for i in order]
     return s0_sorted, sigma_end_sorted
+
+# Utils/shooting.py
+import multiprocessing as mp
+import traceback
+from typing import Any, Dict
+
+
+def diagnostic_scan_with_timeout(timeout_sec: float, **kwargs) -> Dict[str, Any]:
+    """
+    Run diagnostic_scan(**kwargs) in a separate process.
+    If it exceeds timeout_sec, terminate the process and raise TimeoutError.
+    """
+    ctx = mp.get_context("spawn")  # important on macOS
+    q: mp.Queue = ctx.Queue()
+
+    def _worker(queue, kw):
+        try:
+            out = diagnostic_scan(**kw)
+            queue.put(("ok", out))
+        except Exception:
+            queue.put(("err", traceback.format_exc()))
+
+    p = ctx.Process(target=_worker, args=(q, kwargs), daemon=True)
+    p.start()
+    p.join(timeout_sec)
+
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        raise TimeoutError(f"diagnostic_scan exceeded {timeout_sec:.1f}s")
+
+    if q.empty():
+        raise RuntimeError("diagnostic_scan worker exited without returning data")
+
+    status, payload = q.get()
+    if status == "ok":
+        return payload
+    raise RuntimeError(f"diagnostic_scan failed:\n{payload}")

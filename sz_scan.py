@@ -252,7 +252,6 @@ def run_scan(
     # λ scan: list of values to sample; choose logarithmic spacing
     lmbda_scan = [
         0.0,
-        1e-76,
         1e-74,
         1e-72,
         1e-70,

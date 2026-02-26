@@ -2,7 +2,7 @@ from scipy.integrate import solve_ivp
 import numpy as np
 from Utils.TOV import initial_conditions, make_tov, StoppingConditions
 from Utils.params import c, G_N
-
+from Utils.graphics_single import custom_print
 
 # ---------- helpers ----------
 def count_nodes_sigma(sigma, target, tol=None, hysteresis=3.0):
@@ -384,6 +384,14 @@ def integrate_star(
     stop_at_2r=True,
     record_mu2=False,
 ):
+    # print(
+    #    f"[EOS-check] rho_eqState = {rho_eqState}  name={getattr(rho_eqState,'__name__',None)}  module={getattr(rho_eqState,'__module__',None)}",
+    #    flush=True,
+    # )
+    # print(
+    #    f"[EOS-check] p_eqState   = {p_eqState}    name={getattr(p_eqState,'__name__',None)}  module={getattr(p_eqState,'__module__',None)}",
+    #    flush=True,
+    # )
     r_span = (r0, r_max)
 
     y0 = initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu)

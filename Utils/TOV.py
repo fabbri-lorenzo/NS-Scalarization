@@ -1,6 +1,7 @@
 from Utils.params import c, M2
 import numpy as np
 import warnings
+from Utils.graphics_single import custom_print
 
 MAX_EXP_ARG = 700  # exp(700) ~ 1e304, below overflow
 MIN_ABS_NUM = 1e-300
@@ -266,6 +267,7 @@ class StoppingConditions:
             p = y[0]
             val = p - self.frac_pc * self.p_c
             if (val <= 0.0) and (self.R_star is None):
+                custom_print(f"surface reached at r={r:.3e} m", color="blue")
                 self.R_star = float(r)
             return val
         _ev.terminal = False       # not stopping at surface
@@ -287,6 +289,7 @@ class StoppingConditions:
         def _ev(r, y):
             for v in y:
                 if not np.isfinite(v):
+                    custom_print(f"blow‑up at r={r:.3e} m, state={y}", color="red")
                     return 0.0
             return 1.0
 

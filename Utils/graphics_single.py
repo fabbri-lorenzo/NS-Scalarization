@@ -249,12 +249,13 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
 
 
 # --- Colored printing utility ---
+import sys
 from colorama import Fore, Style, init
 
 # Initialize colorama (important for Windows, harmless on Mac/Linux)
 init(autoreset=True)
 
-def custom_print(text, color="white", style="normal"):
+def custom_print(text, color="white", style="normal", stream=None):
     colors = {
         "black": Fore.BLACK,
         "red": Fore.RED,
@@ -276,4 +277,5 @@ def custom_print(text, color="white", style="normal"):
     color_code = colors.get(color.lower(), Fore.WHITE)
     style_code = styles.get(style.lower(), "")
 
-    print(f"{style_code}{color_code}{text}{Style.RESET_ALL}")
+    out = stream if stream is not None else sys.stdout
+    print(f"{style_code}{color_code}{text}{Style.RESET_ALL}", file=out)
