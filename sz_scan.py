@@ -285,11 +285,11 @@ def run_scan(
         "lmbda": lmbda_fixed_for_xi_scan,
         "nu": nu_val,
         "method": "RK45",
-        "a": -M,
+        "a": 1e-10 * M,
         "b": M,
-        "abs_cut": (1e-10 * M) * 1e-2,
+        "abs_cut": 1e-12 * M,
         "rel_cut": 1e-2,
-        "merge_tol": (1e-10 * M) * 1e-2,
+        "merge_tol": 1e-12 * M,
         "target_shooting": [0.0],
     }
 

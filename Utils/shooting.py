@@ -310,43 +310,35 @@ def _merge_index_ranges(ranges, n_points, expand_points=0):
     out.append((cur_a, cur_b))
     return out
 
-def _compress_brackets_by_center(brackets, cluster_tol):
-    """
-    Compress near-duplicate brackets by clustering on bracket center.
-    Keeps the bracket with the lowest score in each cluster.
 
-    Input brackets: list of (u, v, score)
-    Output: list of (u, v)
-    """
-    if not brackets:
-        return []
+def _candidate_ranges_from_grid(F, n_points, detect_near_zero, near_zero_factor):
+    candidate_ranges = []
+    for i in range(n_points - 1):
+        f1, f2 = F[i], F[i + 1]
+        if (
+            np.isfinite(f1)
+            and np.isfinite(f2)
+            and (f1 == 0.0 or f2 == 0.0 or (f1 * f2 < 0.0))
+        ):
+            candidate_ranges.append((i, i + 1))
 
-    # Sort by center
-    items = sorted(brackets, key=lambda b: 0.5 * (b[0] + b[1]))
+    if detect_near_zero:
+        finite = np.isfinite(F)
+        if np.any(finite):
+            absF = np.abs(F[finite])
+            med = float(np.median(absF))
+            scale = med if med > 0.0 else float(np.nanmax(absF)) if absF.size else 1.0
+            if scale <= 0.0:
+                scale = 1.0
+            thresh = near_zero_factor * scale / max(1, n_points // 10)
 
-    clusters = []
-    cur = [items[0]]
-    cur_center = 0.5 * (items[0][0] + items[0][1])
-
-    for b in items[1:]:
-        c = 0.5 * (b[0] + b[1])
-        if abs(c - cur_center) <= cluster_tol:
-            cur.append(b)
-            # update representative center (mean center)
-            cur_center = np.mean([0.5 * (x[0] + x[1]) for x in cur])
-        else:
-            clusters.append(cur)
-            cur = [b]
-            cur_center = c
-    clusters.append(cur)
-
-    # Keep best score from each cluster
-    out = []
-    for cl in clusters:
-        best = min(cl, key=lambda x: x[2])  # smallest score
-        out.append((best[0], best[1]))
-
-    return out
+            for i in range(1, n_points - 1):
+                f0, fm, fp = F[i], F[i - 1], F[i + 1]
+                if not (np.isfinite(f0) and np.isfinite(fm) and np.isfinite(fp)):
+                    continue
+                if abs(f0) <= abs(fm) and abs(f0) <= abs(fp) and abs(f0) <= thresh:
+                    candidate_ranges.append((i - 1, i + 1))
+    return candidate_ranges
 
 
 def diagnostic_scan(
@@ -370,8 +362,6 @@ def diagnostic_scan(
     expand_coarse_points=1,
     detect_near_zero=True,
     near_zero_factor=5.0,
-    compress_brackets=False,
-    compress_tol=None,
     parallel=False,
     max_workers=None,
 ):
@@ -406,9 +396,37 @@ def diagnostic_scan(
         raise ValueError("n_refine must be >= 3")
 
     # --- 1) coarse scan ---
-    S_coarse = np.linspace(float(a), float(b), n_coarse)
-    F_coarse = _eval_sigma_residuals_on_grid(
-        S_coarse,
+    a = float(a)
+    b = float(b)
+    if not (0.0 < a < b):
+        raise ValueError("Require 0 < a < b for [-b,-a] U [a,b] scanning")
+
+    n_pos = n_coarse // 2
+    n_neg = n_coarse - n_pos
+
+    S_pos = np.linspace(a, b, n_pos, endpoint=True)
+    S_neg = np.linspace(-b, -a, n_neg, endpoint=True)
+
+    F_pos = _eval_sigma_residuals_on_grid(
+        S_pos,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi,
+        m2,
+        lmbda,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        target=target,
+        parallel=parallel,
+        max_workers=max_workers,
+        idx_sigma=2,
+    )
+    F_neg = _eval_sigma_residuals_on_grid(
+        S_neg,
         r0,
         r_max,
         p_eqState,
@@ -426,43 +444,22 @@ def diagnostic_scan(
         idx_sigma=2,
     )
 
-    # --- 2) find promising coarse ranges (as point-index ranges) ---
-    candidate_ranges = []
+    # combine for diagnostics/plots (optional but nice)
+    S_coarse = np.concatenate([S_neg, S_pos])
+    F_coarse = np.concatenate([F_neg, F_pos])
+    order = np.argsort(S_coarse)
+    S_coarse = S_coarse[order]
+    F_coarse = F_coarse[order]
 
-    # (i) Sign-change coarse cells
-    for i in range(n_coarse - 1):
-        f1, f2 = F_coarse[i], F_coarse[i + 1]
-        if (
-            np.isfinite(f1)
-            and np.isfinite(f2)
-            and (f1 == 0.0 or f2 == 0.0 or (f1 * f2 < 0.0))
-        ):
-            candidate_ranges.append((i, i + 1))
+    # --- 2) find promising coarse ranges (per side) ---
+    cand_pos = _candidate_ranges_from_grid(
+        F_pos, len(S_pos), detect_near_zero, near_zero_factor
+    )
+    cand_neg = _candidate_ranges_from_grid(
+        F_neg, len(S_neg), detect_near_zero, near_zero_factor
+    )
 
-    # (ii) Optional: near-zero local minima to catch missed sign flips at coarse resolution
-    if detect_near_zero:
-        finite = np.isfinite(F_coarse)
-        if np.any(finite):
-            absF = np.abs(F_coarse[finite])
-            med = float(np.median(absF))
-            # fallback if median is tiny/zero
-            scale = med if med > 0.0 else float(np.nanmax(absF)) if absF.size else 1.0
-            if scale <= 0.0:
-                scale = 1.0
-            thresh = near_zero_factor * scale / max(1, n_coarse // 10)
-
-            # local minima in |F|
-            for i in range(1, n_coarse - 1):
-                f0, fm, fp = F_coarse[i], F_coarse[i - 1], F_coarse[i + 1]
-                if not (np.isfinite(f0) and np.isfinite(fm) and np.isfinite(fp)):
-                    continue
-                af0, afm, afp = abs(f0), abs(fm), abs(fp)
-                if af0 <= afm and af0 <= afp and af0 <= thresh:
-                    # refine around this minimum (one cell on each side)
-                    candidate_ranges.append((i - 1, i + 1))
-
-    # If nothing looks promising, return early
-    if not candidate_ranges:
+    if (not cand_pos) and (not cand_neg):
         return {
             "brackets": [],
             "S_coarse": S_coarse,
@@ -472,56 +469,60 @@ def diagnostic_scan(
             "regions": [],
         }
 
-    # Merge/expand candidate coarse ranges
-    merged_ranges_idx = _merge_index_ranges(
-        candidate_ranges,
-        n_points=n_coarse,
-        expand_points=expand_coarse_points,
-    )
-
-    # --- 3) refine only merged regions ---
-    refined_brackets_scored = []
-    S_refined_all = []
-    F_refined_all = []
-    regions = []
-
-    for i0, i1 in merged_ranges_idx:
-        sL = float(S_coarse[i0])
-        sR = float(S_coarse[i1])
-        if sR <= sL:
-            continue
-
-        S_loc = np.linspace(sL, sR, n_refine)
-        F_loc = _eval_sigma_residuals_on_grid(
-            S_loc,
-            r0,
-            r_max,
-            p_eqState,
-            rho_eqState,
-            xi,
-            m2,
-            lmbda,
-            nu_val,
-            rho0,
-            frac_pc,
-            method,
-            target=target,
-            parallel=parallel,
-            max_workers=max_workers,
-            idx_sigma=2,
+    def _refine_from_ranges(S_side, F_side, candidate_ranges):
+        merged = _merge_index_ranges(
+            candidate_ranges, n_points=len(S_side), expand_points=expand_coarse_points
         )
 
-        local_brackets = _detect_brackets_from_grid(S_loc, F_loc)
-        refined_brackets_scored.extend(local_brackets)
+        refined_brackets_scored = []
+        S_refined_all, F_refined_all, regions = [], [], []
 
-        S_refined_all.append(S_loc)
-        F_refined_all.append(F_loc)
-        regions.append((sL, sR))
+        for i0, i1 in merged:
+            sL = float(S_side[i0])
+            sR = float(S_side[i1])
+            if sR <= sL:
+                continue
+
+            S_loc = np.linspace(sL, sR, n_refine)
+            F_loc = _eval_sigma_residuals_on_grid(
+                S_loc,
+                r0,
+                r_max,
+                p_eqState,
+                rho_eqState,
+                xi,
+                m2,
+                lmbda,
+                nu_val,
+                rho0,
+                frac_pc,
+                method,
+                target=target,
+                parallel=parallel,
+                max_workers=max_workers,
+                idx_sigma=2,
+            )
+
+            refined_brackets_scored.extend(_detect_brackets_from_grid(S_loc, F_loc))
+            S_refined_all.append(S_loc)
+            F_refined_all.append(F_loc)
+            regions.append((sL, sR))
+
+        return refined_brackets_scored, S_refined_all, F_refined_all, regions
+
+    br_pos, Spos_all, Fpos_all, reg_pos = _refine_from_ranges(S_pos, F_pos, cand_pos)
+    br_neg, Sneg_all, Fneg_all, reg_neg = _refine_from_ranges(S_neg, F_neg, cand_neg)
+
+    refined_brackets_scored = br_neg + br_pos
+    regions = reg_neg + reg_pos
+
+    # refined diagnostics arrays
+    S_refined_all = Sneg_all + Spos_all
+    F_refined_all = Fneg_all + Fpos_all
 
     if S_refined_all:
         S_refined = np.concatenate(S_refined_all)
         F_refined = np.concatenate(F_refined_all)
-        # sort for nicer diagnostics
         order = np.argsort(S_refined)
         S_refined = S_refined[order]
         F_refined = F_refined[order]
@@ -529,19 +530,11 @@ def diagnostic_scan(
         S_refined = np.array([], dtype=float)
         F_refined = np.array([], dtype=float)
 
-    # --- 4) optional bracket compression (fewer Brent calls) ---
-    if compress_brackets and refined_brackets_scored:
-        coarse_step = (
-            abs(S_coarse[1] - S_coarse[0]) if len(S_coarse) > 1 else abs(b - a)
-        )
-        tol = float(compress_tol) if (compress_tol is not None) else 0.35 * coarse_step
-        brackets = _compress_brackets_by_center(
-            refined_brackets_scored, cluster_tol=tol
-        )
-    else:
-        brackets = [(u, v) for (u, v, _score) in refined_brackets_scored]
+    # --- 4) bracket compression (if you have it in the original function) ---
+    # If you removed compression, use:
+    brackets = [(u, v) for (u, v, _score) in refined_brackets_scored]
 
-    # Final sort by |center| or by center; center is usually more intuitive
+    # sort by center
     brackets = sorted(brackets, key=lambda uv: 0.5 * (uv[0] + uv[1]))
 
     return {

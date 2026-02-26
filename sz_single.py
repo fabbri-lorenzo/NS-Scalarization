@@ -35,16 +35,16 @@ rho_eqState = rho_SLy4
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 # Physical couplings
-xi = 0.0
+xi = 100
 m = 0.0  # scalar mass (eV)
-lmbda = 0.0  # self–coupling (dimensionless)
+lmbda = 1e-76  # self–coupling (dimensionless)
 nu = 0.0  # vacuum expectation value
 
 # Choose integrator method based on parameter regime
 method = "BDF" if (xi <= 0.0 or lmbda > 1e-65 or nu > M * 0.1 or m >= 1e-11) else "RK45"
 
 # Shooting parameters
-a, b = -M, M  # bracket for σ₀
+a, b = 1e-10 * M, M  # bracket for σ₀
 target_shooting = [0.0] if nu == 0.0 else [abs(nu), -abs(nu)]
 abs_cut = a * 1e-2
 rel_cut = 1e-2

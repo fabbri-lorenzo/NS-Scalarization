@@ -3,6 +3,8 @@ import numpy as np
 import warnings
 
 MAX_EXP_ARG = 700  # exp(700) ~ 1e304, below overflow
+MIN_ABS_NUM = 1e-300
+MAX_ABS_NUM = 1e300
 
 warnings.filterwarnings("error", category=RuntimeWarning)
 np.seterr(over="raise", divide="raise", invalid="raise")
@@ -52,6 +54,12 @@ def initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu):
     Psi_c= r0**2 *Psi2
     sigma_c= sigma0 + r0**2 * sigma2
     dsigma_c = 2*r0*sigma2
+
+    if any(
+        (abs(x) < MIN_ABS_NUM or abs(x) > MAX_ABS_NUM)
+        for x in [p_c, Psi_c, sigma_c, dsigma_c]
+    ):
+        return [np.nan, np.nan, np.nan, np.nan]
 
     return [p_c, Psi_c, sigma_c, dsigma_c]
 
