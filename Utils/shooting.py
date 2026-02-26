@@ -356,51 +356,32 @@ def diagnostic_scan(
     a,
     b,
     *,
-    n_coarse=41,
-    n_refine=81,
+    n_coarse=201,
     target=0.0,
-    expand_coarse_points=1,
-    detect_near_zero=True,
-    near_zero_factor=5.0,
     parallel=False,
     max_workers=None,
 ):
     """
-    Multi-resolution diagnostic scan:
-      1) Coarse scan over [a,b]
-      2) Identify promising regions (sign changes + optional near-zero local minima)
-      3) Refine only those regions
-      4) Return refined brackets (optionally compressed)
+    Coarse-only diagnostic scan:
+      - Build a coarse grid on [-b,-a] U [a,b]
+      - Evaluate sigma_residual on the grid
+      - Detect sign-change brackets on the coarse grid
 
-    Parameters
-    ----------
-    parallel : bool, optional
-        If True, evaluates the residuals on the coarse and refined grids concurrently.
-        This can reduce wall-clock time when ``sigma_residual`` is expensive.
-    max_workers : int or None, optional
-        Maximum number of worker threads used when ``parallel`` is True.
-
-    Returns
-    -------
-    result : dict with keys
-      - "brackets": list[(u, v)] for Brent
-      - "S_coarse", "F_coarse"
-      - "S_refined", "F_refined"   (concatenated refined samples, sorted, unique-ish)
-      - "regions": list[(s_left, s_right)] refined regions
+    Returns a dict compatible with your existing caller:
+      - "brackets": list[(u,v)] for Brent
+      - "S_coarse","F_coarse"
+      - "regions" empty
     """
     n_coarse = int(n_coarse)
-    n_refine = int(n_refine)
     if n_coarse < 3:
         raise ValueError("n_coarse must be >= 3")
-    if n_refine < 3:
-        raise ValueError("n_refine must be >= 3")
 
-    # --- 1) coarse scan ---
     a = float(a)
     b = float(b)
     if not (0.0 < a < b):
         raise ValueError("Require 0 < a < b for [-b,-a] U [a,b] scanning")
 
+    # split points between negative and positive side
     n_pos = n_coarse // 2
     n_neg = n_coarse - n_pos
 
@@ -444,106 +425,22 @@ def diagnostic_scan(
         idx_sigma=2,
     )
 
-    # combine for diagnostics/plots (optional but nice)
+    # combine for diagnostics
     S_coarse = np.concatenate([S_neg, S_pos])
     F_coarse = np.concatenate([F_neg, F_pos])
     order = np.argsort(S_coarse)
     S_coarse = S_coarse[order]
     F_coarse = F_coarse[order]
 
-    # --- 2) find promising coarse ranges (per side) ---
-    cand_pos = _candidate_ranges_from_grid(
-        F_pos, len(S_pos), detect_near_zero, near_zero_factor
-    )
-    cand_neg = _candidate_ranges_from_grid(
-        F_neg, len(S_neg), detect_near_zero, near_zero_factor
-    )
-
-    if (not cand_pos) and (not cand_neg):
-        return {
-            "brackets": [],
-            "S_coarse": S_coarse,
-            "F_coarse": F_coarse,
-            "S_refined": np.array([], dtype=float),
-            "F_refined": np.array([], dtype=float),
-            "regions": [],
-        }
-
-    def _refine_from_ranges(S_side, F_side, candidate_ranges):
-        merged = _merge_index_ranges(
-            candidate_ranges, n_points=len(S_side), expand_points=expand_coarse_points
-        )
-
-        refined_brackets_scored = []
-        S_refined_all, F_refined_all, regions = [], [], []
-
-        for i0, i1 in merged:
-            sL = float(S_side[i0])
-            sR = float(S_side[i1])
-            if sR <= sL:
-                continue
-
-            S_loc = np.linspace(sL, sR, n_refine)
-            F_loc = _eval_sigma_residuals_on_grid(
-                S_loc,
-                r0,
-                r_max,
-                p_eqState,
-                rho_eqState,
-                xi,
-                m2,
-                lmbda,
-                nu_val,
-                rho0,
-                frac_pc,
-                method,
-                target=target,
-                parallel=parallel,
-                max_workers=max_workers,
-                idx_sigma=2,
-            )
-
-            refined_brackets_scored.extend(_detect_brackets_from_grid(S_loc, F_loc))
-            S_refined_all.append(S_loc)
-            F_refined_all.append(F_loc)
-            regions.append((sL, sR))
-
-        return refined_brackets_scored, S_refined_all, F_refined_all, regions
-
-    br_pos, Spos_all, Fpos_all, reg_pos = _refine_from_ranges(S_pos, F_pos, cand_pos)
-    br_neg, Sneg_all, Fneg_all, reg_neg = _refine_from_ranges(S_neg, F_neg, cand_neg)
-
-    refined_brackets_scored = br_neg + br_pos
-    regions = reg_neg + reg_pos
-
-    # refined diagnostics arrays
-    S_refined_all = Sneg_all + Spos_all
-    F_refined_all = Fneg_all + Fpos_all
-
-    if S_refined_all:
-        S_refined = np.concatenate(S_refined_all)
-        F_refined = np.concatenate(F_refined_all)
-        order = np.argsort(S_refined)
-        S_refined = S_refined[order]
-        F_refined = F_refined[order]
-    else:
-        S_refined = np.array([], dtype=float)
-        F_refined = np.array([], dtype=float)
-
-    # --- 4) bracket compression (if you have it in the original function) ---
-    # If you removed compression, use:
-    brackets = [(u, v) for (u, v, _score) in refined_brackets_scored]
-
-    # sort by center
+    # detect brackets directly on coarse grid
+    coarse_brackets_scored = _detect_brackets_from_grid(S_coarse, F_coarse)
+    brackets = [(u, v) for (u, v, _score) in coarse_brackets_scored]
     brackets = sorted(brackets, key=lambda uv: 0.5 * (uv[0] + uv[1]))
 
     return {
         "brackets": brackets,
         "S_coarse": S_coarse,
         "F_coarse": F_coarse,
-        "S_refined": S_refined,
-        "F_refined": F_refined,
-        "regions": regions,
     }
 
 

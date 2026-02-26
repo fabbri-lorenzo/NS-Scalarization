@@ -151,22 +151,19 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         method=method,
         a=a,
         b=b,
-        n_coarse=200,
-        n_refine=50,
+        n_coarse=201,
         target=target_shooting,
-        expand_coarse_points=1,
     )
     brackets = scan["brackets"]
     F_coarse = scan["F_coarse"]
     custom_print(
         f"[diagnostics] adaptive scan over [{a/M:.1e},{b/M:.1e}]*M: "
-        f"{np.sum(np.isfinite(F_coarse))}/{len(F_coarse)} finite coarse samples, "
-        f"refined regions={len(scan['regions'])}, Brent brackets={len(brackets)}",
+        f"{np.sum(np.isfinite(F_coarse))}/{len(F_coarse)} finite coarse samples, ",
         color="gray",
     )
     if len(brackets) == 0:
         custom_print(
-            "No promising brackets found in the given range. Scalarization does not occur here.",
+            "No sign changes detected in diagnostic scan; no scalarized solutions found.",
             color="magenta",
         )
         return {
@@ -197,6 +194,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         merge_tol=merge_tol,
         target=target_shooting,
         idx_sigma=2,
+        parallel=True,
     )
     if not s0_list:
         raise RuntimeError("No σ₀ roots found; see diagnostics above.")

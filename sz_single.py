@@ -44,7 +44,7 @@ nu = 0.0  # vacuum expectation value
 method = "BDF" if (xi <= 0.0 or lmbda > 1e-65 or nu > M * 0.1 or m >= 1e-11) else "RK45"
 
 # Shooting parameters
-a, b = 1e-10 * M, M  # bracket for σ₀
+a, b = 1e-8 * M, M  # bracket for σ₀
 target_shooting = [0.0] if nu == 0.0 else [abs(nu), -abs(nu)]
 abs_cut = a * 1e-2
 rel_cut = 1e-2
