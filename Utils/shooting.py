@@ -593,6 +593,9 @@ def find_root_brent(
 
     try:
         s_star = brentq(f, float(u), float(v), rtol=rtol, maxiter=maxiter)
+        # Enforce σ0 ≥ 0 if the root is negative
+        if s_star < 0.0:
+            s_star = abs(s_star)
         # one more eval to get (sigma_end, t_eff) without a second integrate later
         delta, sigma_end, t_eff = sigma_residual(
             s_star,
@@ -611,6 +614,7 @@ def find_root_brent(
             target=target,
             return_details=True,
         )
+
         return float(s_star), float(delta), float(sigma_end), float(t_eff)
     except Exception:
         return None, None, None, None

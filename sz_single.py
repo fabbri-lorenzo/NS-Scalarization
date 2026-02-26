@@ -35,7 +35,7 @@ rho_eqState = rho_SLy4
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 # Physical couplings
-xi = 100
+xi = 0.0
 m = 0.0  # scalar mass (eV)
 lmbda = 0.0  # self–coupling (dimensionless)
 nu = 0.0  # vacuum expectation value
@@ -44,7 +44,7 @@ nu = 0.0  # vacuum expectation value
 method = "BDF" if (xi <= 0.0 or lmbda > 1e-65 or nu > M * 0.1 or m >= 1e-11) else "RK45"
 
 # Shooting parameters
-a, b = 1e-10 * M, M  # bracket for σ₀
+a, b = -M, M  # bracket for σ₀
 target_shooting = [0.0] if nu == 0.0 else [abs(nu), -abs(nu)]
 abs_cut = a * 1e-2
 rel_cut = 1e-2
@@ -79,6 +79,7 @@ def main() -> None:
     jobs = [rho0_lightS, rho0_heavyS]
     # Launch separate processes for light and heavy stars
     results = []
+
     with ProcessPoolExecutor(max_workers=2) as ex:
         for label, out, ok, result in ex.map(
             run_solve_model_captured, repeat(params), jobs

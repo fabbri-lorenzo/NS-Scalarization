@@ -152,7 +152,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         a=a,
         b=b,
         n_coarse=80,
-        n_refine=120,
+        n_refine=40,
         target=target_shooting,
         expand_coarse_points=1,
     )

@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import csv
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Dict, Any, Iterable, Tuple
+from typing import Dict, Any, Iterable, Tuple, List
 
 import numpy as np
 
@@ -140,8 +140,112 @@ def _write_scan_row(
         )
 
 
-def run_scan() -> None:
-    """Perform ξ and λ scans for both light and heavy stars."""
+def _resolve_stars(selection: str | Iterable[str]) -> List[Tuple[float, str]]:
+    """Resolve star selection into (rho0, tag) pairs."""
+    if isinstance(selection, str):
+        key = selection.strip().lower()
+        if key in {
+            "both",
+            "all",
+            "lh",
+            "hl",
+            "l+h",
+            "h+l",
+            "light+heavy",
+            "heavy+light",
+        }:
+            tags = {"L", "H"}
+        else:
+            tags = set()
+            if key in {"l", "light"}:
+                tags.add("L")
+            elif key in {"h", "heavy"}:
+                tags.add("H")
+            else:
+                raise ValueError(
+                    "stars must be 'light', 'heavy', 'both' or an iterable of those"
+                )
+    else:
+        tags = set()
+        for item in selection:
+            if not isinstance(item, str):
+                raise TypeError("stars iterable must contain strings")
+            key = item.strip().lower()
+            if key in {"l", "light"}:
+                tags.add("L")
+            elif key in {"h", "heavy"}:
+                tags.add("H")
+            elif key in {"both", "all"}:
+                tags.update({"L", "H"})
+            else:
+                raise ValueError(
+                    "stars iterable must contain 'light', 'heavy', or 'both'"
+                )
+    stars: List[Tuple[float, str]] = []
+    if "L" in tags:
+        stars.append((rho0_lightS, "L"))
+    if "H" in tags:
+        stars.append((rho0_heavyS, "H"))
+    if not stars:
+        raise ValueError("stars selection produced no targets")
+    return stars
+
+
+def _resolve_scans(selection: str | Iterable[str]) -> Tuple[bool, bool]:
+    """Resolve scan selection into (do_xi, do_lambda)."""
+
+    def _norm_key(item: str) -> str:
+        return item.strip().lower()
+
+    if isinstance(selection, str):
+        key = _norm_key(selection)
+        if key in {
+            "both",
+            "all",
+            "xi+lambda",
+            "lambda+xi",
+            "xi,lambda",
+            "lambda,xi",
+            "xi,lmbda",
+            "lmbda,xi",
+        }:
+            return True, True
+        if key in {"xi"}:
+            return True, False
+        if key in {"lambda", "lmbda"}:
+            return False, True
+        raise ValueError("scans must be 'xi', 'lambda', 'both' or an iterable of those")
+
+    do_xi = False
+    do_lambda = False
+    for item in selection:
+        if not isinstance(item, str):
+            raise TypeError("scans iterable must contain strings")
+        key = _norm_key(item)
+        if key in {"xi"}:
+            do_xi = True
+        elif key in {"lambda", "lmbda"}:
+            do_lambda = True
+        elif key in {"both", "all"}:
+            do_xi = True
+            do_lambda = True
+        else:
+            raise ValueError("scans iterable must contain 'xi', 'lambda', or 'both'")
+    if not (do_xi or do_lambda):
+        raise ValueError("scans selection produced no targets")
+    return do_xi, do_lambda
+
+
+def run_scan(
+    stars: str | Iterable[str] = "heavy",
+    scans: str | Iterable[str] = "both",
+) -> None:
+    """Perform ξ and/or λ scans for selected stars.
+
+    Args:
+        stars: "light", "heavy", "both" or an iterable of those.
+        scans: "xi", "lambda", "both" or an iterable of those.
+    """
     # ----- define the scan ranges -----
     # ξ scan: set the range and step here
     xi_min, xi_max, xi_step = -10.0, 10.0, 0.25
@@ -181,7 +285,7 @@ def run_scan() -> None:
         "lmbda": lmbda_fixed_for_xi_scan,
         "nu": nu_val,
         "method": "RK45",
-        "a": 1e-10 * M,
+        "a": -M,
         "b": M,
         "abs_cut": (1e-10 * M) * 1e-2,
         "rel_cut": 1e-2,
@@ -190,149 +294,149 @@ def run_scan() -> None:
     }
 
     # List of stars to scan
-    stars = [
-        # (rho0_lightS, "L"),
-        (rho0_heavyS, "H"),
-    ]
+    stars_to_scan = _resolve_stars(stars)
+    do_xi_scan, do_lambda_scan = _resolve_scans(scans)
 
     # ---- ξ scan at fixed λ ----
-    xi_values = list(np.arange(xi_min, xi_max + xi_step * 0.5, xi_step))
-    lmbda_val = lmbda_fixed_for_xi_scan
-    for rho0, tag in stars:
-        custom_print(
-            f"\nPerforming ξ–scan for star {tag}: λ={lmbda_val:.2e}, ν={nu_val:.2e}",
-            style="bold",
-        )
-        out_dir = os.path.join("Results", "scan", tag)
-        os.makedirs(out_dir, exist_ok=True)
-        csv_path = os.path.join(
-            out_dir, f"xi_scan_lmbda={lmbda_val:.0e}_nu={nu_val:.0e}.csv"
-        )
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "xi",
-                    "lambda",
-                    "nu",
-                    "rho0_tag",
-                    "scalarized",
-                    "mode_n",
-                    "vacuum_sign",
-                    "sigma0_over_M",
-                    "ADM_over_Msun",
-                    "Q_over_Msun",
-                    "Q_over_ADM",
-                    "R_star_km",
-                ]
+    if do_xi_scan:
+        xi_values = list(np.arange(xi_min, xi_max + xi_step * 0.5, xi_step))
+        lmbda_val = lmbda_fixed_for_xi_scan
+        for rho0, tag in stars_to_scan:
+            custom_print(
+                f"\nPerforming ξ–scan for star {tag}: λ={lmbda_val:.2e}, ν={nu_val:.2e}",
+                style="bold",
             )
-            # Parallelise over ξ values
-            with ProcessPoolExecutor(max_workers=4) as ex:
-                futures = {}
-                for xi_val in xi_values:
-                    fut = ex.submit(
-                        _run_single_point,
-                        params_template,
-                        rho0,
-                        xi_val,
-                        lmbda_val,
-                        nu_val,
-                        m_val,
-                    )
-                    futures[fut] = (xi_val, lmbda_val)
-                iterator = as_completed(futures)
-                if tqdm is not None:
-                    iterator = tqdm(
-                        iterator,
-                        total=len(futures),
-                        desc=f"ξ-scan {tag}",
-                        unit="pt",
-                    )
-                for fut in iterator:
-                    xi_hint, l_hint = futures[fut]
-                    try:
-                        xi_ret, l_ret, result = fut.result()
-                        _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
-                    except Exception as e:
-                        # Log error and write a non–scalarised row
-                        if tqdm is not None:
-                            tqdm.write(f"[ξ={xi_hint}] error: {e}")
-                        else:
-                            custom_print(f"[ξ={xi_hint}] error: {e}", color="red")
-                        _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
+            out_dir = os.path.join("Results", "scan", tag)
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(
+                out_dir, f"xi_scan_lmbda={lmbda_val:.0e}_nu={nu_val:.0e}.csv"
+            )
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "xi",
+                        "lambda",
+                        "nu",
+                        "rho0_tag",
+                        "scalarized",
+                        "mode_n",
+                        "vacuum_sign",
+                        "sigma0_over_M",
+                        "ADM_over_Msun",
+                        "Q_over_Msun",
+                        "Q_over_ADM",
+                        "R_star_km",
+                    ]
+                )
+                # Parallelise over ξ values
+                with ProcessPoolExecutor(max_workers=4) as ex:
+                    futures = {}
+                    for xi_val in xi_values:
+                        fut = ex.submit(
+                            _run_single_point,
+                            params_template,
+                            rho0,
+                            xi_val,
+                            lmbda_val,
+                            nu_val,
+                            m_val,
+                        )
+                        futures[fut] = (xi_val, lmbda_val)
+                    iterator = as_completed(futures)
+                    if tqdm is not None:
+                        iterator = tqdm(
+                            iterator,
+                            total=len(futures),
+                            desc=f"ξ-scan {tag}",
+                            unit="pt",
+                        )
+                    for fut in iterator:
+                        xi_hint, l_hint = futures[fut]
+                        try:
+                            xi_ret, l_ret, result = fut.result()
+                            _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+                        except Exception as e:
+                            # Log error and write a non–scalarised row
+                            if tqdm is not None:
+                                tqdm.write(f"[ξ={xi_hint}] error: {e}")
+                            else:
+                                custom_print(f"[ξ={xi_hint}] error: {e}", color="red")
+                            _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
 
-        custom_print(
-            f"Completed ξ–scan for star {tag}. CSV saved to {csv_path}",
-            style="dim",
-        )
+            custom_print(
+                f"Completed ξ–scan for star {tag}. CSV saved to {csv_path}",
+                style="dim",
+            )
 
-    ## ---- λ scan at fixed ξ ----
-    # xi_val = xi_fixed_for_lambda_scan
-    # for rho0, tag in stars:
-    #    custom_print(
-    #        f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
-    #        style="bold",
-    #    )
-    #    out_dir = os.path.join("Results", "scan", tag)
-    #    os.makedirs(out_dir, exist_ok=True)
-    #    csv_path = os.path.join(
-    #        out_dir, f"lmbda_scan_xi={xi_val:.0e}_nu={nu_val:.0e}.csv"
-    #    )
-    #    with open(csv_path, "w", newline="") as f:
-    #        writer = csv.writer(f)
-    #        writer.writerow(
-    #            [
-    #                "xi",
-    #                "lambda",
-    #                "nu",
-    #                "rho0_tag",
-    #                "scalarized",
-    #                "mode_n",
-    #                "vacuum_sign",
-    #                "sigma0_over_M",
-    #                "ADM_over_Msun",
-    #                "Q_over_Msun",
-    #                "Q_over_ADM",
-    #                "R_star_km",
-    #            ]
-    #        )
-    #        with ProcessPoolExecutor(max_workers=4) as ex:
-    #            futures = {}
-    #            for lam_val in lmbda_scan:
-    #                fut = ex.submit(
-    #                    _run_single_point,
-    #                    params_template,
-    #                    rho0,
-    #                    xi_val,
-    #                    lam_val,
-    #                    nu_val,
-    #                    m_val,
-    #                )
-    #                futures[fut] = (xi_val, lam_val)
-    #            iterator = as_completed(futures)
-    #            if tqdm is not None:
-    #                iterator = tqdm(
-    #                    iterator,
-    #                    total=len(futures),
-    #                    desc=f"λ-scan {tag}",
-    #                    unit="pt",
-    #                )
-    #            for fut in iterator:
-    #                xi_hint, l_hint = futures[fut]
-    #                try:
-    #                    xi_ret, l_ret, result = fut.result()
-    #                    _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
-    #                except Exception as e:
-    #                    if tqdm is not None:
-    #                        tqdm.write(f"[λ={l_hint}] error: {e}")
-    #                    else:
-    #                        custom_print(f"[λ={l_hint}] error: {e}", color="red")
-    #                    _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
-    #    custom_print(
-    #        f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
-    #        style="dim",
-    #    )
+    # ---- λ scan at fixed ξ ----
+    if do_lambda_scan:
+        xi_val = xi_fixed_for_lambda_scan
+        for rho0, tag in stars_to_scan:
+            custom_print(
+                f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
+                style="bold",
+            )
+            out_dir = os.path.join("Results", "scan", tag)
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(
+                out_dir, f"lmbda_scan_xi={xi_val:.0e}_nu={nu_val:.0e}.csv"
+            )
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "xi",
+                        "lambda",
+                        "nu",
+                        "rho0_tag",
+                        "scalarized",
+                        "mode_n",
+                        "vacuum_sign",
+                        "sigma0_over_M",
+                        "ADM_over_Msun",
+                        "Q_over_Msun",
+                        "Q_over_ADM",
+                        "R_star_km",
+                    ]
+                )
+                with ProcessPoolExecutor(max_workers=4) as ex:
+                    futures = {}
+                    for lam_val in lmbda_scan:
+                        fut = ex.submit(
+                            _run_single_point,
+                            params_template,
+                            rho0,
+                            xi_val,
+                            lam_val,
+                            nu_val,
+                            m_val,
+                        )
+                        futures[fut] = (xi_val, lam_val)
+                    iterator = as_completed(futures)
+                    if tqdm is not None:
+                        iterator = tqdm(
+                            iterator,
+                            total=len(futures),
+                            desc=f"λ-scan {tag}",
+                            unit="pt",
+                        )
+                    for fut in iterator:
+                        xi_hint, l_hint = futures[fut]
+                        try:
+                            xi_ret, l_ret, result = fut.result()
+                            _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+                        except Exception as e:
+                            if tqdm is not None:
+                                tqdm.write(f"[λ={l_hint}] error: {e}")
+                            else:
+                                custom_print(f"[λ={l_hint}] error: {e}", color="red")
+                            _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
+            custom_print(
+                f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
+                style="dim",
+            )
 
 
 if __name__ == "__main__":
-    run_scan()
+    run_scan(stars="light", scans="lambda")
