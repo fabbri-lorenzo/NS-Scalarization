@@ -151,7 +151,8 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         method=method,
         a=a,
         b=b,
-        n_coarse=201,
+        n_coarse=101,
+        n_refine=50,
         target=target_shooting,
     )
     brackets = scan["brackets"]
