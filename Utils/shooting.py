@@ -1,22 +1,37 @@
+"""Utils.shooting
+
+Adaptive diagnostic scans + shooting utilities.
+
+This file was updated to:
+  1) restore the full implementation of :func:`probe_brackets` (it was a stub)
+  2) provide a robust wall-clock timeout wrapper for :func:`diagnostic_scan`
+     that works on macOS/Windows (spawn start method) by avoiding non-picklable
+     local functions/closures.
+
+The timeout wrapper runs the scan in a separate process and hard-terminates
+that process if it exceeds the requested limit.
+"""
+
 from __future__ import annotations
 
+import contextlib
 import math
-import time
 import os
+import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import get_context
 from typing import Callable, List, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import brentq, minimize_scalar
 
+from Utils.analysis import integrate_star
 from Utils.graphics_single import custom_print
 from Utils.params import M, c
 from Utils.TOV import _sigma2_psi2
-from Utils.analysis import integrate_star
 
-# ----------------------------
-# Core residual (same semantics as before)
-# ----------------------------
+
 def sigma_residual(
     s0: float,
     r0: float,
@@ -36,6 +51,12 @@ def sigma_residual(
     *,
     return_details: bool = False,
 ):
+    """Compute the shooting residual at r_max.
+
+    Returns either a float residual, or (residual, sigma_end, t_eff)
+    if ``return_details`` is True.
+    """
+
     sol, _, _ = integrate_star(
         s0,
         p_eqState,
@@ -58,14 +79,15 @@ def sigma_residual(
 
     m0 = float(np.sqrt(max(0.0, m2)))
 
-    # (A) Massive around zero
+    # (A) Massive around zero vacuum -> use Robin residual
     if (nu == 0.0) and (m0 > 0.0):
         delta = sp_end + (m0 + 1.0 / r_max) * sigma_end
         t_eff = 0.0
         return (delta, sigma_end, t_eff) if return_details else delta
 
-    # (B) Shifted vacuum
+    # (B) Shifted vacuum (nu != 0)
     if nu != 0.0:
+        # choose the closest target branch
         try:
             t_eff = float(target)
         except (TypeError, ValueError):
@@ -80,21 +102,17 @@ def sigma_residual(
             delta = sp_end + (m_vac + 1.0 / r_max) * (sigma_end - t_eff)
             return (delta, sigma_end, t_eff) if return_details else delta
 
+        # tachyonic/flat vacuum: fall back to Dirichlet
         delta = sigma_end - t_eff
         return (delta, sigma_end, t_eff) if return_details else delta
 
-    # (C) Fallback
+    # (C) Massless and nu=0: Dirichlet residual to target
     try:
         t_eff = float(target)
     except (TypeError, ValueError):
         arr = np.asarray(target, dtype=float)
         t_eff = float(arr[np.nanargmin(np.abs(arr - sigma_end))])
     delta = sigma_end - t_eff
-    # near the end of sigma_residual
-    # custom_print(
-    #    f"s0={s0/M:.3e} M, sigma(r_max)={sigma_end:.3e}, sp(r_max)={sp_end:.3e}",
-    #    color="yellow",
-    # )
     return (delta, sigma_end, t_eff) if return_details else delta
 
 
@@ -105,6 +123,8 @@ def residual_accept(
     abs_threshold: float,
     tol_relative: float,
 ) -> Tuple[bool, str | None]:
+    """Acceptance rule for Dirichlet residuals."""
+
     if abs(sigma_rmax - target) <= abs_threshold:
         return True, "abs"
 
@@ -118,9 +138,6 @@ def residual_accept(
     return False, None
 
 
-# ----------------------------
-# Grid evaluation + bracket detection
-# ----------------------------
 def _eval_sigma_residuals_on_grid(
     S: np.ndarray,
     r0: float,
@@ -139,8 +156,6 @@ def _eval_sigma_residuals_on_grid(
     parallel: bool = False,
     max_workers: int | None = None,
     idx_sigma: int = 2,
-    deadline: float | None = None,
-    stage: str = "diagnostic",
 ) -> np.ndarray:
     S = np.asarray(S, dtype=float)
     F = np.empty_like(S, dtype=float)
@@ -171,13 +186,9 @@ def _eval_sigma_residuals_on_grid(
     if parallel:
         with ThreadPoolExecutor(max_workers=max_workers or (os.cpu_count() or 8)) as ex:
             for i, val in enumerate(ex.map(worker, S)):
-                if deadline is not None and time.monotonic() > deadline:
-                    raise TimeoutError(f"{stage} scan exceeded time limit; aborting")
                 F[i] = val
     else:
         for i, s0 in enumerate(S):
-            if deadline is not None and time.monotonic() > deadline:
-                raise TimeoutError(f"{stage} scan exceeded time limit; aborting")
             F[i] = worker(float(s0))
     return F
 
@@ -243,7 +254,6 @@ def _merge_index_ranges(
 ) -> List[Tuple[int, int]]:
     if not ranges:
         return []
-    # expand and clip
     exp = []
     for i0, i1 in ranges:
         a = max(0, i0 - expand_points)
@@ -296,9 +306,6 @@ def _compress_brackets_by_center(
     return out
 
 
-# ----------------------------
-# Adaptive scan (positive only)
-# ----------------------------
 def diagnostic_scan(
     r0: float,
     r_max: float,
@@ -324,25 +331,12 @@ def diagnostic_scan(
     max_workers: int | None = None,
     compress_brackets: bool = True,
     compress_tol: float | None = None,
-    timeout_sec: float | None = None,
+    # soft budget (optional; does NOT hard-stop inside an integrate_star call)
+    time_budget_sec: float | None = None,
 ) -> dict:
-    """
-    Multi-resolution scan on the positive domain [a,b], with a>0.
+    """Multi-resolution scan on the positive domain [a,b], with a>0."""
 
-    Returns dict with:
-      - "brackets": list[(u,v)] for Brent
-      - "S_coarse","F_coarse"
-      - "S_refined","F_refined"
-      - "regions": list[(sL,sR)] refined regions
-    """
-    t_start = time.perf_counter()
-
-    def _check_timeout():
-        if timeout_sec is not None and (time.perf_counter() - t_start) > float(
-            timeout_sec
-        ):
-            raise TimeoutError(f"diagnostic_scan exceeded {timeout_sec}s")
-
+    t_start = time.monotonic()
     n_coarse = int(n_coarse)
     n_refine = int(n_refine)
     if n_coarse < 3:
@@ -355,11 +349,16 @@ def diagnostic_scan(
     if not (0.0 < a < b):
         raise ValueError("Require 0 < a < b for positive-only scanning")
 
-    deadline = (
-        time.monotonic() + float(timeout_sec) if timeout_sec is not None else None
-    )
+    def _check_budget():
+        if time_budget_sec is None:
+            return
+        if (time.monotonic() - t_start) > float(time_budget_sec):
+            raise TimeoutError(
+                f"diagnostic_scan exceeded time_budget_sec={float(time_budget_sec):.1f}"
+            )
 
     # --- 1) coarse scan ---
+    _check_budget()
     S1 = np.geomspace(a, min(b, 1e-2 * M), n_coarse // 2)
     S2 = np.linspace(min(b, 1e-2 * M), b, n_coarse - len(S1))
     S_coarse = np.unique(np.concatenate([S1, S2]))
@@ -380,10 +379,8 @@ def diagnostic_scan(
         parallel=parallel,
         max_workers=max_workers,
         idx_sigma=2,
-        deadline=deadline,
-        stage="coarse",
     )
-    _check_timeout()
+    _check_budget()
 
     # --- 2) candidate coarse ranges ---
     cand = _candidate_ranges_from_grid(
@@ -412,8 +409,7 @@ def diagnostic_scan(
     regions: List[Tuple[float, float]] = []
 
     for i0, i1 in merged:
-        if deadline is not None and time.monotonic() > deadline:
-            raise TimeoutError("diagnostic scan exceeded time limit; aborting")
+        _check_budget()
         sL = float(S_coarse[i0])
         sR = float(S_coarse[i1])
         if sR <= sL:
@@ -436,8 +432,6 @@ def diagnostic_scan(
             parallel=parallel,
             max_workers=max_workers,
             idx_sigma=2,
-            deadline=deadline,
-            stage="refine",
         )
         refined_scored.extend(_detect_brackets_from_grid(S_loc, F_loc))
         S_refined_all.append(S_loc)
@@ -465,9 +459,7 @@ def diagnostic_scan(
         brackets = [(u, v) for (u, v, _s) in refined_scored]
 
     brackets = sorted(brackets, key=lambda uv: 0.5 * (uv[0] + uv[1]))
-    # after computing F_coarse in diagnostic_scan
-    for s, f in zip(S_coarse, F_coarse):
-        custom_print(f"S/M={s/M:.2e}, residual={f:.3e}", color="gray")
+
     return {
         "brackets": brackets,
         "S_coarse": S_coarse,
@@ -478,9 +470,45 @@ def diagnostic_scan(
     }
 
 
-# ----------------------------
-# Positive-only root finding + probing
-# ----------------------------
+def _diagnostic_scan_worker(q, kwargs: dict) -> None:
+    """Entry point for the scan subprocess (must be top-level for spawn)."""
+    try:
+        res = diagnostic_scan(**kwargs)
+        q.put(("ok", res))
+    except Exception as e:
+        tb = traceback.format_exc()
+        q.put(("err", (repr(e), tb)))
+
+
+def diagnostic_scan_with_timeout(timeout_sec: float, /, **kwargs) -> dict:
+    """Run :func:`diagnostic_scan` in a separate process with a hard timeout."""
+    timeout_sec = float(timeout_sec)
+    if timeout_sec <= 0:
+        raise ValueError("timeout_sec must be > 0")
+
+    ctx = get_context("spawn")
+    q = ctx.Queue(maxsize=1)
+    p = ctx.Process(target=_diagnostic_scan_worker, args=(q, kwargs), daemon=True)
+    p.start()
+
+    p.join(timeout=timeout_sec)
+    if p.is_alive():
+        with contextlib.suppress(Exception):
+            p.terminate()
+        p.join(timeout=5)
+        raise TimeoutError(f"diagnostic_scan timed out after {timeout_sec:.1f} s")
+
+    if q.empty():
+        raise RuntimeError(
+            "diagnostic_scan subprocess exited without returning a result"
+        )
+    status, payload = q.get()
+    if status == "ok":
+        return payload
+    err_repr, tb = payload
+    raise RuntimeError(f"diagnostic_scan failed in subprocess: {err_repr}\n{tb}")
+
+
 def find_root_brent(
     u: float,
     v: float,
@@ -650,6 +678,8 @@ def probe_brackets(
     max_workers: int | None = None,
     allow_minimize_fallback: bool = True,
 ) -> Tuple[List[float], List[float]]:
+    """Refine brackets, find candidate σ0 roots, filter accepted ones."""
+
     candidates: List[float] = []
     residuals: List[float] = []
     sigma_ends: List[float] = []
@@ -797,41 +827,3 @@ def probe_brackets(
     s0_sorted = [candidates[i] for i in order]
     sigma_end_sorted = [sigma_ends[i] for i in order]
     return s0_sorted, sigma_end_sorted
-
-# Utils/shooting.py
-import multiprocessing as mp
-import traceback
-from typing import Any, Dict
-
-
-def diagnostic_scan_with_timeout(timeout_sec: float, **kwargs) -> Dict[str, Any]:
-    """
-    Run diagnostic_scan(**kwargs) in a separate process.
-    If it exceeds timeout_sec, terminate the process and raise TimeoutError.
-    """
-    ctx = mp.get_context("spawn")  # important on macOS
-    q: mp.Queue = ctx.Queue()
-
-    def _worker(queue, kw):
-        try:
-            out = diagnostic_scan(**kw)
-            queue.put(("ok", out))
-        except Exception:
-            queue.put(("err", traceback.format_exc()))
-
-    p = ctx.Process(target=_worker, args=(q, kwargs), daemon=True)
-    p.start()
-    p.join(timeout_sec)
-
-    if p.is_alive():
-        p.terminate()
-        p.join()
-        raise TimeoutError(f"diagnostic_scan exceeded {timeout_sec:.1f}s")
-
-    if q.empty():
-        raise RuntimeError("diagnostic_scan worker exited without returning data")
-
-    status, payload = q.get()
-    if status == "ok":
-        return payload
-    raise RuntimeError(f"diagnostic_scan failed:\n{payload}")

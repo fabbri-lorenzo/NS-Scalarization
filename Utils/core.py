@@ -158,7 +158,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
                 method=method,
                 a=a,
                 b=b,
-                n_coarse=101,
+                n_coarse=50,
                 n_refine=50,
                 target=target_shooting,
             )
@@ -248,7 +248,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         merge_tol=merge_tol,
         target=target_shooting,
         idx_sigma=2,
-        parallel=False,
+        parallel=True,
     )
     if not s0_list:
         raise RuntimeError("No σ₀ roots found; see diagnostics above.")
@@ -482,10 +482,10 @@ def run_solve_model_captured(
     buf = io.StringIO()
     ok = True
     result: Dict[str, Any] | None = None
-    # with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-    try:
-        result = solve_model(params, rho0)
-    except Exception:
-        ok = False
-        traceback.print_exc()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        try:
+            result = solve_model(params, rho0)
+        except Exception:
+            ok = False
+            traceback.print_exc()
     return label, buf.getvalue(), ok, result

@@ -267,7 +267,7 @@ class StoppingConditions:
             p = y[0]
             val = p - self.frac_pc * self.p_c
             if (val <= 0.0) and (self.R_star is None):
-                custom_print(f"surface reached at r={r:.3e} m", color="blue")
+                # custom_print(f"surface reached at r={r:.3e} m", color="blue")
                 self.R_star = float(r)
             return val
         _ev.terminal = False       # not stopping at surface

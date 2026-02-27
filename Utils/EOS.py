@@ -5,7 +5,7 @@
 import numpy as np
 from scipy.optimize import brentq
 from Utils.params import c
-_RHO_CALLS = 0
+# _RHO_CALLS = 0
 _RHO_FLOOR = 1e-12  # kg/m^3, tiny density floor to keep RHS well-defined at the surface
 
 _a = np.array(
@@ -61,10 +61,10 @@ def rho_SLy4(p_Pa):
     Works with scalars or numpy arrays.
     """
 
-    global _RHO_CALLS
-    _RHO_CALLS += 1
-    if _RHO_CALLS % 2000 == 0:
-        print(f"[EOS] rho_SLy4 calls: {_RHO_CALLS}")
+    # global _RHO_CALLS
+    # _RHO_CALLS += 1
+    # if _RHO_CALLS % 2000 == 0:
+    #    print(f"[EOS] rho_SLy4 calls: {_RHO_CALLS}")
 
     P_in = np.asarray(p_Pa, dtype=float)
 

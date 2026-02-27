@@ -75,7 +75,7 @@ def main() -> None:
         "merge_tol": merge_tol,
     }
     t0 = time.perf_counter()
-    jobs = [rho0_heavyS]  # rho0_lightS,
+    jobs = [rho0_lightS, rho0_heavyS]
     # Launch separate processes for light and heavy stars
     results = []
 
