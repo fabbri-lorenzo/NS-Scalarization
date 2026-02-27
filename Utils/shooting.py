@@ -1,62 +1,130 @@
-"""Utils.shooting
-
-Adaptive diagnostic scans + shooting utilities.
-
-This file was updated to:
-  1) restore the full implementation of :func:`probe_brackets` (it was a stub)
-  2) provide a robust wall-clock timeout wrapper for :func:`diagnostic_scan`
-     that works on macOS/Windows (spawn start method) by avoiding non-picklable
-     local functions/closures.
-
-The timeout wrapper runs the scan in a separate process and hard-terminates
-that process if it exceeds the requested limit.
-"""
-
-from __future__ import annotations
-
-import contextlib
-import math
-import os
-import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import get_context
-from typing import Callable, List, Sequence, Tuple
-
 import numpy as np
-from scipy.optimize import brentq, minimize_scalar
-
+from Utils.params import c, M
+from Utils.TOV import _sigma2_psi2
 from Utils.analysis import integrate_star
 from Utils.graphics_single import custom_print
-from Utils.params import M, c
-from Utils.TOV import _sigma2_psi2
+from scipy.optimize import brentq
+from concurrent.futures import ThreadPoolExecutor
+import os
+
+
+def _sigma_residual_worker(args):
+    """Worker for parallel evaluation of sigma_residual across a grid.
+
+    Parameters are packed to satisfy the pickler used by ThreadPoolExecutor.
+    On failure the worker returns NaN for the residual.
+    """
+    (
+        s,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi,
+        m2,
+        lmbda,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        idx_sigma,
+        target,
+    ) = args
+    try:
+        return sigma_residual(
+            float(s),
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi,
+            m2,
+            lmbda,
+            nu_val,
+            rho0,
+            frac_pc,
+            method,
+            idx_sigma=idx_sigma,
+            target=target,
+        )
+    except Exception:
+        return np.nan
+
+
+def _bracket_root_worker(args):
+    """Worker for parallel evaluation of find_root_brent across brackets.
+    This simply wraps find_root_brent with its arguments.
+    """
+    (
+        u,
+        v,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi_val,
+        m2_val,
+        lmbda_val,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        idx_sigma,
+        target,
+    ) = args
+    return find_root_brent(
+        u,
+        v,
+        r0,
+        r_max,
+        p_eqState,
+        rho_eqState,
+        xi_val,
+        m2_val,
+        lmbda_val,
+        nu_val,
+        rho0,
+        frac_pc,
+        method,
+        idx_sigma=idx_sigma,
+        target=target,
+    )
 
 
 def sigma_residual(
-    s0: float,
-    r0: float,
-    r_max: float,
-    p_eqState: Callable[[float], float],
-    rho_eqState: Callable[[float], float],
-    xi: float,
-    m2: float,
-    lmbda: float,
-    nu: float,
-    rho0: float,
-    frac_pc: float,
-    method: str,
-    idx_sigma: int = 2,
-    idx_sigma_p: int = 3,
-    target: float | Sequence[float] = 0.0,
+    s0,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    m2,
+    lmbda,
+    nu,
+    rho0,
+    frac_pc,
+    method,
+    idx_sigma=2,
+    idx_sigma_p=3,
+    target=0.0,
     *,
-    return_details: bool = False,
+    return_details=False,
 ):
-    """Compute the shooting residual at r_max.
-
-    Returns either a float residual, or (residual, sigma_end, t_eff)
-    if ``return_details`` is True.
     """
+    Residual used for shooting, chosen by asymptotic regime:
 
+      1) Massive around zero (nu == 0, m > 0):
+         Robin on sigma:
+            sigma' + (m + 1/r) sigma = 0
+
+      2) Shifted vacuum / double-well (nu != 0):
+         Robin on delta sigma = sigma - sigma_inf, where sigma_inf = nearest target in {+|nu|,-|nu|}:
+            sigma' + (m_vac + 1/r) (sigma - sigma_inf) = 0
+         with m_vac = sqrt( V''(sigma_inf) ) = sqrt( m2 + 2 lambda nu^2 )
+
+      3) Massless pure quartic (nu == 0, m == 0):
+         fallback to target matching sigma(r_max) -> target (typically 0)
+    """
     sol, _, _ = integrate_star(
         s0,
         p_eqState,
@@ -77,94 +145,81 @@ def sigma_residual(
     sigma_end = float(sol.y[idx_sigma, -1])
     sp_end = float(sol.y[idx_sigma_p, -1])
 
+    # physical "bare" mass around sigma=0
     m0 = float(np.sqrt(max(0.0, m2)))
 
-    # (A) Massive around zero vacuum -> use Robin residual
+    # ------------------------------------------------------------------
+    # (A) Massive around zero: nu == 0 and m0 > 0
+    # ------------------------------------------------------------------
     if (nu == 0.0) and (m0 > 0.0):
         delta = sp_end + (m0 + 1.0 / r_max) * sigma_end
         t_eff = 0.0
         return (delta, sigma_end, t_eff) if return_details else delta
 
-    # (B) Shifted vacuum (nu != 0)
+    # ------------------------------------------------------------------
+    # (B) Shifted vacuum (double-well-type asymptotics): nu != 0
+    #     Apply Robin to delta sigma = sigma - sigma_inf
+    # ------------------------------------------------------------------
     if nu != 0.0:
-        # choose the closest target branch
-        try:
-            t_eff = float(target)
-        except (TypeError, ValueError):
-            arr = np.asarray(target, dtype=float)
-            if arr.size == 0 or not np.all(np.isfinite(arr)):
-                raise ValueError("target list must be non-empty and finite")
-            t_eff = float(arr[np.nanargmin(np.abs(arr - sigma_end))])
+        # choose the asymptotic vacuum branch (+|nu| or -|nu|) closest to sigma_end
+        t_eff = _nearest_target_value(sigma_end, target)  # usually target=[+|nu|,-|nu|]
 
+        # asymptotic mass around the vacuum:
+        # V = 1/2 m2 sigma^2 + lambda/4 (sigma^2 - nu^2)^2
+        # V''(±nu) = m2 + 2 lambda nu^2
         m_vac_sq = float(m2 + 2.0 * lmbda * (nu**2))
+
+        # If m_vac^2 <= 0, Yukawa Robin is not valid (tachyonic/critical tail);
+        # fallback to target matching.
         if m_vac_sq > 0.0:
             m_vac = float(np.sqrt(m_vac_sq))
             delta = sp_end + (m_vac + 1.0 / r_max) * (sigma_end - t_eff)
             return (delta, sigma_end, t_eff) if return_details else delta
 
-        # tachyonic/flat vacuum: fall back to Dirichlet
+        # fallback if no positive asymptotic mass
         delta = sigma_end - t_eff
         return (delta, sigma_end, t_eff) if return_details else delta
 
-    # (C) Massless and nu=0: Dirichlet residual to target
-    try:
-        t_eff = float(target)
-    except (TypeError, ValueError):
-        arr = np.asarray(target, dtype=float)
-        t_eff = float(arr[np.nanargmin(np.abs(arr - sigma_end))])
+    # ------------------------------------------------------------------
+    # (C) Massless pure quartic / generic non-Yukawa tail fallback
+    # ------------------------------------------------------------------
+    t_eff = _nearest_target_value(sigma_end, target)
     delta = sigma_end - t_eff
     return (delta, sigma_end, t_eff) if return_details else delta
 
 
-def residual_accept(
-    sigma_rmax: float,
-    sigma0: float,
-    target: float,
-    abs_threshold: float,
-    tol_relative: float,
-) -> Tuple[bool, str | None]:
-    """Acceptance rule for Dirichlet residuals."""
-
-    if abs(sigma_rmax - target) <= abs_threshold:
-        return True, "abs"
-
-    if target == 0.0:
-        if sigma0 != 0.0 and abs(sigma_rmax) / abs(sigma0) <= tol_relative:
-            return True, "rel"
-    else:
-        if abs((sigma_rmax - target) / target) <= tol_relative:
-            return True, "rel"
-
-    return False, None
-
-
 def _eval_sigma_residuals_on_grid(
-    S: np.ndarray,
-    r0: float,
-    r_max: float,
-    p_eqState: Callable[[float], float],
-    rho_eqState: Callable[[float], float],
-    xi: float,
-    m2: float,
-    lmbda: float,
-    nu_val: float,
-    rho0: float,
-    frac_pc: float,
-    method: str,
-    target: float | Sequence[float],
+    S,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    m2,
+    lmbda,
+    nu_val,
+    rho0,
+    frac_pc,
+    method,
+    target=0.0,
     *,
-    parallel: bool = False,
-    max_workers: int | None = None,
-    idx_sigma: int = 2,
-) -> np.ndarray:
-    S = np.asarray(S, dtype=float)
-    F = np.empty_like(S, dtype=float)
+    parallel=False,
+    max_workers=None,
+    idx_sigma=2,
+):
+    """Evaluate sigma_residual on an array of s0 values, returning F.
 
-    def worker(s0: float) -> float:
-        try:
-            return float(
-                sigma_residual(
-                    float(s0),
+    If ``parallel`` is True, this will evaluate the residuals concurrently
+    using a ThreadPoolExecutor. Each call to ``sigma_residual`` is independent,
+    so the speedup can be significant when the integrator is expensive.
+    On failure the residual value is set to NaN.
+    """
+    if not parallel:
+        F = np.empty(len(S), dtype=float)
+        for i, s in enumerate(S):
+            try:
+                F[i] = sigma_residual(
+                    float(s),
                     r0,
                     r_max,
                     p_eqState,
@@ -179,164 +234,172 @@ def _eval_sigma_residuals_on_grid(
                     idx_sigma=idx_sigma,
                     target=target,
                 )
-            )
-        except Exception:
-            return math.nan
-
-    if parallel:
-        with ThreadPoolExecutor(max_workers=max_workers or (os.cpu_count() or 8)) as ex:
-            for i, val in enumerate(ex.map(worker, S)):
-                F[i] = val
-    else:
-        for i, s0 in enumerate(S):
-            F[i] = worker(float(s0))
+            except Exception:
+                F[i] = np.nan
+        return F
+    # parallel case
+    tasks = [
+        (
+            float(s),
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi,
+            m2,
+            lmbda,
+            nu_val,
+            rho0,
+            frac_pc,
+            method,
+            idx_sigma,
+            target,
+        )
+        for s in S
+    ]
+    F = np.empty(len(S), dtype=float)
+    with ThreadPoolExecutor(max_workers=max_workers or os.cpu_count()) as executor:
+        for i, res in enumerate(executor.map(_sigma_residual_worker, tasks)):
+            F[i] = res
     return F
 
 
-def _detect_brackets_from_grid(
-    S: np.ndarray, F: np.ndarray
-) -> List[Tuple[float, float, float]]:
-    out: List[Tuple[float, float, float]] = []
+def _detect_brackets_from_grid(S, F):
+    """
+    Return sign-change brackets from sampled grid points.
+    Each bracket is (u, v, score), where score helps rank/compress:
+      score = min(|f(u)|, |f(v)|)  (lower is usually better)
+    """
+    brackets = []
     for i in range(len(S) - 1):
-        u, v = float(S[i]), float(S[i + 1])
-        f1, f2 = float(F[i]), float(F[i + 1])
-        if not (math.isfinite(f1) and math.isfinite(f2)):
-            continue
-        if f1 * f2 < 0.0:
+        f1, f2 = F[i], F[i + 1]
+        if (
+            np.isfinite(f1)
+            and np.isfinite(f2)
+            and (f1 == 0.0 or f2 == 0.0 or (f1 * f2 < 0.0))
+        ):
             score = float(min(abs(f1), abs(f2)))
-            out.append((u, v, score))
-    return out
+            brackets.append((float(S[i]), float(S[i + 1]), score))
+    return brackets
 
 
-def _candidate_ranges_from_grid(
-    F: np.ndarray,
-    *,
-    detect_near_zero: bool,
-    near_zero_factor: float,
-) -> List[Tuple[int, int]]:
-    """Return index ranges on a positive grid to refine."""
-    n = len(F)
-    ranges: List[Tuple[int, int]] = []
-
-    # (i) sign-change cells
-    for i in range(n - 1):
-        f1, f2 = float(F[i]), float(F[i + 1])
-        if math.isfinite(f1) and math.isfinite(f2) and (f1 * f2 < 0.0):
-            ranges.append((i, i + 1))
-
-    # (ii) near-zero local minima (tangential roots)
-    if detect_near_zero:
-        finite = np.isfinite(F)
-        if np.any(finite):
-            absF = np.abs(F[finite])
-            med = float(np.median(absF))
-            scale = med if med > 0.0 else float(np.nanmax(absF)) if absF.size else 1.0
-            if not math.isfinite(scale) or scale <= 0.0:
-                scale = 1.0
-            thresh = near_zero_factor * scale / max(1, n // 10)
-
-            for i in range(1, n - 1):
-                f0, fm, fp = float(F[i]), float(F[i - 1]), float(F[i + 1])
-                if not (math.isfinite(f0) and math.isfinite(fm) and math.isfinite(fp)):
-                    continue
-                af0, afm, afp = abs(f0), abs(fm), abs(fp)
-                if (af0 <= afm) and (af0 <= afp) and (af0 <= thresh):
-                    ranges.append((i - 1, i + 1))
-
-    return ranges
-
-
-def _merge_index_ranges(
-    ranges: List[Tuple[int, int]],
-    *,
-    n_points: int,
-    expand_points: int,
-) -> List[Tuple[int, int]]:
+def _merge_index_ranges(ranges, n_points, expand_points=0):
+    """
+    Merge list of (i0, i1) point-index ranges (inclusive) into disjoint ranges.
+    Expands each range by expand_points before merging.
+    """
     if not ranges:
         return []
-    exp = []
+
+    out = []
+    clipped = []
     for i0, i1 in ranges:
-        a = max(0, i0 - expand_points)
-        b = min(n_points - 1, i1 + expand_points)
+        a = max(0, int(i0) - int(expand_points))
+        b = min(n_points - 1, int(i1) + int(expand_points))
         if a > b:
             a, b = b, a
-        exp.append((a, b))
-    exp.sort(key=lambda r: r[0])
+        clipped.append((a, b))
 
-    merged = []
-    cur_a, cur_b = exp[0]
-    for a, b in exp[1:]:
+    clipped.sort(key=lambda x: x[0])
+    cur_a, cur_b = clipped[0]
+    for a, b in clipped[1:]:
         if a <= cur_b + 1:
             cur_b = max(cur_b, b)
         else:
-            merged.append((cur_a, cur_b))
+            out.append((cur_a, cur_b))
             cur_a, cur_b = a, b
-    merged.append((cur_a, cur_b))
-    return merged
+    out.append((cur_a, cur_b))
+    return out
 
 
-def _compress_brackets_by_center(
-    brackets_scored: List[Tuple[float, float, float]],
-    *,
-    cluster_tol: float,
-) -> List[Tuple[float, float]]:
-    if not brackets_scored:
+def _compress_brackets_by_center(brackets, cluster_tol):
+    """
+    Compress near-duplicate brackets by clustering on bracket center.
+    Keeps the bracket with the lowest score in each cluster.
+
+    Input brackets: list of (u, v, score)
+    Output: list of (u, v)
+    """
+    if not brackets:
         return []
-    items = sorted(brackets_scored, key=lambda b: 0.5 * (b[0] + b[1]))
-    out: List[Tuple[float, float]] = []
 
-    cur_cluster = [items[0]]
+    # Sort by center
+    items = sorted(brackets, key=lambda b: 0.5 * (b[0] + b[1]))
+
+    clusters = []
+    cur = [items[0]]
     cur_center = 0.5 * (items[0][0] + items[0][1])
-
-    def flush(cluster: List[Tuple[float, float, float]]):
-        best = min(cluster, key=lambda x: x[2])
-        out.append((best[0], best[1]))
 
     for b in items[1:]:
         c = 0.5 * (b[0] + b[1])
         if abs(c - cur_center) <= cluster_tol:
-            cur_cluster.append(b)
-            cur_center = float(np.mean([0.5 * (x[0] + x[1]) for x in cur_cluster]))
+            cur.append(b)
+            # update representative center (mean center)
+            cur_center = np.mean([0.5 * (x[0] + x[1]) for x in cur])
         else:
-            flush(cur_cluster)
-            cur_cluster = [b]
+            clusters.append(cur)
+            cur = [b]
             cur_center = c
-    flush(cur_cluster)
+    clusters.append(cur)
+
+    # Keep best score from each cluster
+    out = []
+    for cl in clusters:
+        best = min(cl, key=lambda x: x[2])  # smallest score
+        out.append((best[0], best[1]))
 
     return out
 
 
 def diagnostic_scan(
-    r0: float,
-    r_max: float,
-    p_eqState: Callable[[float], float],
-    rho_eqState: Callable[[float], float],
-    xi: float,
-    m2: float,
-    lmbda: float,
-    nu_val: float,
-    rho0: float,
-    frac_pc: float,
-    method: str,
-    a: float,
-    b: float,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    m2,
+    lmbda,
+    nu_val,
+    rho0,
+    frac_pc,
+    method,
+    a,
+    b,
     *,
-    n_coarse: int = 41,
-    n_refine: int = 81,
-    target: float | Sequence[float] = 0.0,
-    expand_coarse_points: int = 1,
-    detect_near_zero: bool = True,
-    near_zero_factor: float = 5.0,
-    parallel: bool = False,
-    max_workers: int | None = None,
-    compress_brackets: bool = True,
-    compress_tol: float | None = None,
-    # soft budget (optional; does NOT hard-stop inside an integrate_star call)
-    time_budget_sec: float | None = None,
-) -> dict:
-    """Multi-resolution scan on the positive domain [a,b], with a>0."""
+    n_coarse=41,
+    n_refine=81,
+    target=0.0,
+    expand_coarse_points=1,
+    detect_near_zero=True,
+    near_zero_factor=5.0,
+    compress_brackets=True,
+    compress_tol=None,
+    parallel=False,
+    max_workers=None,
+):
+    """
+    Multi-resolution diagnostic scan:
+      1) Coarse scan over [a,b]
+      2) Identify promising regions (sign changes + optional near-zero local minima)
+      3) Refine only those regions
+      4) Return refined brackets (optionally compressed)
 
-    t_start = time.monotonic()
+    Parameters
+    ----------
+    parallel : bool, optional
+        If True, evaluates the residuals on the coarse and refined grids concurrently.
+        This can reduce wall-clock time when ``sigma_residual`` is expensive.
+    max_workers : int or None, optional
+        Maximum number of worker threads used when ``parallel`` is True.
+
+    Returns
+    -------
+    result : dict with keys
+      - "brackets": list[(u, v)] for Brent
+      - "S_coarse", "F_coarse"
+      - "S_refined", "F_refined"   (concatenated refined samples, sorted, unique-ish)
+      - "regions": list[(s_left, s_right)] refined regions
+    """
     n_coarse = int(n_coarse)
     n_refine = int(n_refine)
     if n_coarse < 3:
@@ -344,21 +407,7 @@ def diagnostic_scan(
     if n_refine < 3:
         raise ValueError("n_refine must be >= 3")
 
-    a = float(a)
-    b = float(b)
-    if not (0.0 < a < b):
-        raise ValueError("Require 0 < a < b for positive-only scanning")
-
-    def _check_budget():
-        if time_budget_sec is None:
-            return
-        if (time.monotonic() - t_start) > float(time_budget_sec):
-            raise TimeoutError(
-                f"diagnostic_scan exceeded time_budget_sec={float(time_budget_sec):.1f}"
-            )
-
     # --- 1) coarse scan ---
-    _check_budget()
     S1 = np.geomspace(a, min(b, 1e-2 * M), n_coarse // 2)
     S2 = np.linspace(min(b, 1e-2 * M), b, n_coarse - len(S1))
     S_coarse = np.unique(np.concatenate([S1, S2]))
@@ -380,15 +429,44 @@ def diagnostic_scan(
         max_workers=max_workers,
         idx_sigma=2,
     )
-    _check_budget()
 
-    # --- 2) candidate coarse ranges ---
-    cand = _candidate_ranges_from_grid(
-        F_coarse,
-        detect_near_zero=detect_near_zero,
-        near_zero_factor=near_zero_factor,
-    )
-    if not cand:
+    # --- 2) find promising coarse ranges (as point-index ranges) ---
+    candidate_ranges = []
+
+    # (i) Sign-change coarse cells
+    for i in range(n_coarse - 1):
+        f1, f2 = F_coarse[i], F_coarse[i + 1]
+        if (
+            np.isfinite(f1)
+            and np.isfinite(f2)
+            and (f1 == 0.0 or f2 == 0.0 or (f1 * f2 < 0.0))
+        ):
+            candidate_ranges.append((i, i + 1))
+
+    # (ii) Optional: near-zero local minima to catch missed sign flips at coarse resolution
+    if detect_near_zero:
+        finite = np.isfinite(F_coarse)
+        if np.any(finite):
+            absF = np.abs(F_coarse[finite])
+            med = float(np.median(absF))
+            # fallback if median is tiny/zero
+            scale = med if med > 0.0 else float(np.nanmax(absF)) if absF.size else 1.0
+            if scale <= 0.0:
+                scale = 1.0
+            thresh = near_zero_factor * scale / max(1, n_coarse // 10)
+
+            # local minima in |F|
+            for i in range(1, n_coarse - 1):
+                f0, fm, fp = F_coarse[i], F_coarse[i - 1], F_coarse[i + 1]
+                if not (np.isfinite(f0) and np.isfinite(fm) and np.isfinite(fp)):
+                    continue
+                af0, afm, afp = abs(f0), abs(fm), abs(fp)
+                if af0 <= afm and af0 <= afp and af0 <= thresh:
+                    # refine around this minimum (one cell on each side)
+                    candidate_ranges.append((i - 1, i + 1))
+
+    # If nothing looks promising, return early
+    if not candidate_ranges:
         return {
             "brackets": [],
             "S_coarse": S_coarse,
@@ -398,23 +476,26 @@ def diagnostic_scan(
             "regions": [],
         }
 
-    merged = _merge_index_ranges(
-        cand, n_points=len(S_coarse), expand_points=int(expand_coarse_points)
+    # Merge/expand candidate coarse ranges
+    merged_ranges_idx = _merge_index_ranges(
+        candidate_ranges,
+        n_points=n_coarse,
+        expand_points=expand_coarse_points,
     )
 
     # --- 3) refine only merged regions ---
-    refined_scored: List[Tuple[float, float, float]] = []
-    S_refined_all: List[np.ndarray] = []
-    F_refined_all: List[np.ndarray] = []
-    regions: List[Tuple[float, float]] = []
+    refined_brackets_scored = []
+    S_refined_all = []
+    F_refined_all = []
+    regions = []
 
-    for i0, i1 in merged:
-        _check_budget()
+    for i0, i1 in merged_ranges_idx:
         sL = float(S_coarse[i0])
         sR = float(S_coarse[i1])
         if sR <= sL:
             continue
-        S_loc = np.linspace(sL, sR, n_refine, endpoint=True)
+
+        S_loc = np.linspace(sL, sR, n_refine)
         F_loc = _eval_sigma_residuals_on_grid(
             S_loc,
             r0,
@@ -433,7 +514,10 @@ def diagnostic_scan(
             max_workers=max_workers,
             idx_sigma=2,
         )
-        refined_scored.extend(_detect_brackets_from_grid(S_loc, F_loc))
+
+        local_brackets = _detect_brackets_from_grid(S_loc, F_loc)
+        refined_brackets_scored.extend(local_brackets)
+
         S_refined_all.append(S_loc)
         F_refined_all.append(F_loc)
         regions.append((sL, sR))
@@ -441,6 +525,7 @@ def diagnostic_scan(
     if S_refined_all:
         S_refined = np.concatenate(S_refined_all)
         F_refined = np.concatenate(F_refined_all)
+        # sort for nicer diagnostics
         order = np.argsort(S_refined)
         S_refined = S_refined[order]
         F_refined = F_refined[order]
@@ -448,16 +533,19 @@ def diagnostic_scan(
         S_refined = np.array([], dtype=float)
         F_refined = np.array([], dtype=float)
 
-    # --- 4) bracket compression ---
-    if compress_brackets and refined_scored:
-        step = (
-            float(abs(S_coarse[1] - S_coarse[0])) if len(S_coarse) > 1 else float(b - a)
+    # --- 4) optional bracket compression (fewer Brent calls) ---
+    if compress_brackets and refined_brackets_scored:
+        coarse_step = (
+            abs(S_coarse[1] - S_coarse[0]) if len(S_coarse) > 1 else abs(b - a)
         )
-        tol = float(compress_tol) if compress_tol is not None else 0.35 * step
-        brackets = _compress_brackets_by_center(refined_scored, cluster_tol=tol)
+        tol = float(compress_tol) if (compress_tol is not None) else 0.35 * coarse_step
+        brackets = _compress_brackets_by_center(
+            refined_brackets_scored, cluster_tol=tol
+        )
     else:
-        brackets = [(u, v) for (u, v, _s) in refined_scored]
+        brackets = [(u, v) for (u, v, _score) in refined_brackets_scored]
 
+    # Final sort by |center| or by center; center is usually more intuitive
     brackets = sorted(brackets, key=lambda uv: 0.5 * (uv[0] + uv[1]))
 
     return {
@@ -470,97 +558,46 @@ def diagnostic_scan(
     }
 
 
-def _diagnostic_scan_worker(q, kwargs: dict) -> None:
-    """Entry point for the scan subprocess (must be top-level for spawn)."""
-    try:
-        res = diagnostic_scan(**kwargs)
-        q.put(("ok", res))
-    except Exception as e:
-        tb = traceback.format_exc()
-        q.put(("err", (repr(e), tb)))
-
-
-def diagnostic_scan_with_timeout(timeout_sec: float, /, **kwargs) -> dict:
-    """Run :func:`diagnostic_scan` in a separate process with a hard timeout."""
-    timeout_sec = float(timeout_sec)
-    if timeout_sec <= 0:
-        raise ValueError("timeout_sec must be > 0")
-
-    ctx = get_context("spawn")
-    q = ctx.Queue(maxsize=1)
-    p = ctx.Process(target=_diagnostic_scan_worker, args=(q, kwargs), daemon=True)
-    p.start()
-
-    p.join(timeout=timeout_sec)
-    if p.is_alive():
-        with contextlib.suppress(Exception):
-            p.terminate()
-        p.join(timeout=5)
-        raise TimeoutError(f"diagnostic_scan timed out after {timeout_sec:.1f} s")
-
-    if q.empty():
-        raise RuntimeError(
-            "diagnostic_scan subprocess exited without returning a result"
-        )
-    status, payload = q.get()
-    if status == "ok":
-        return payload
-    err_repr, tb = payload
-    raise RuntimeError(f"diagnostic_scan failed in subprocess: {err_repr}\n{tb}")
-
-
 def find_root_brent(
-    u: float,
-    v: float,
-    r0: float,
-    r_max: float,
-    p_eqState: Callable[[float], float],
-    rho_eqState: Callable[[float], float],
-    xi: float,
-    m2: float,
-    lmbda: float,
-    nu: float,
-    rho0: float,
-    frac_pc: float,
-    method: str,
+    u,
+    v,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi,
+    m2,
+    lmbda,
+    nu,
+    rho0,
+    frac_pc,
+    method,
     idx_sigma: int = 2,
-    *,
     rtol: float = 1e-12,
     maxiter: int = 200,
-    target: float | Sequence[float] = 0.0,
+    target=0.0,
 ):
-    def f(s0: float) -> float:
-        return float(
-            sigma_residual(
-                s0,
-                r0,
-                r_max,
-                p_eqState,
-                rho_eqState,
-                xi,
-                m2,
-                lmbda,
-                nu,
-                rho0,
-                frac_pc,
-                method,
-                idx_sigma=idx_sigma,
-                target=target,
-            )
+    def f(s0):
+        return sigma_residual(
+            s0,
+            r0,
+            r_max,
+            p_eqState,
+            rho_eqState,
+            xi,
+            m2,
+            lmbda,
+            nu,
+            rho0,
+            frac_pc,
+            method=method,
+            idx_sigma=idx_sigma,
+            target=target,
         )
 
     try:
-        fu = f(float(u))
-        fv = f(float(v))
-        if not (math.isfinite(fu) and math.isfinite(fv)):
-            return None, None, None, None
-        if fu * fv > 0.0:
-            return None, None, None, None
-
-        s_star = float(brentq(f, float(u), float(v), rtol=rtol, maxiter=maxiter))
-        if s_star <= 0.0:
-            return None, None, None, None
-
+        s_star = brentq(f, float(u), float(v), rtol=rtol, maxiter=maxiter)
+        # one more eval to get (sigma_end, t_eff) without a second integrate later
         delta, sigma_end, t_eff = sigma_residual(
             s_star,
             r0,
@@ -583,129 +620,105 @@ def find_root_brent(
         return None, None, None, None
 
 
-def _minimize_residual(
-    u: float,
-    v: float,
-    r0: float,
-    r_max: float,
-    p_eqState: Callable[[float], float],
-    rho_eqState: Callable[[float], float],
-    xi: float,
-    m2: float,
-    lmbda: float,
-    nu: float,
-    rho0: float,
-    frac_pc: float,
-    method: str,
-    idx_sigma: int,
-    target: float | Sequence[float],
-    abs_cut: float,
-):
-    def f(s0: float) -> float:
-        return float(
-            sigma_residual(
-                s0,
-                r0,
-                r_max,
-                p_eqState,
-                rho_eqState,
-                xi,
-                m2,
-                lmbda,
-                nu,
-                rho0,
-                frac_pc,
-                method,
-                idx_sigma=idx_sigma,
-                target=target,
-            )
-        )
+def residual_accept(sigma_rmax, sigma0, target, abs_threshold, tol_relative):
+    """
+    Check whether the residual at r_max is acceptable given the target.
 
+    - If target == 0: use |σ(r_max)| / |σ0| < tol_relative
+    - If target != 0: use |σ(r_max) - target| / |target| < tol_relative
+    Absolute threshold always applies first.
+    """
+    # absolute check
+    if abs(sigma_rmax - target) <= abs_threshold:
+        return True, "abs"
+
+    # relative check
+    if target == 0.0:
+        if sigma0 != 0.0 and abs(sigma_rmax) / abs(sigma0) <= tol_relative:
+            return True, "rel"
+    else:
+        if abs((sigma_rmax - target) / target) <= tol_relative:
+            return True, "rel"
+
+    return False, None
+
+
+def _nearest_target_value(sigma_rmax, target):
+    """Return the scalar target t* in `target` closest to sigma_rmax."""
     try:
-        res = minimize_scalar(lambda x: abs(f(x)), bounds=(u, v), method="bounded")
-    except Exception:
-        return None, None, None, None
-
-    if not res.success:
-        return None, None, None, None
-
-    s_min = float(res.x)
-    if s_min <= 0.0:
-        return None, None, None, None
-
-    delta, sigma_end, t_eff = sigma_residual(
-        s_min,
-        r0,
-        r_max,
-        p_eqState,
-        rho_eqState,
-        xi,
-        m2,
-        lmbda,
-        nu,
-        rho0,
-        frac_pc,
-        method=method,
-        idx_sigma=idx_sigma,
-        target=target,
-        return_details=True,
-    )
-    if math.isfinite(delta) and abs(delta) <= abs_cut:
-        return float(s_min), float(delta), float(sigma_end), float(t_eff)
-    return None, None, None, None
+        return float(target)  # scalar target
+    except (TypeError, ValueError):
+        arr = np.asarray(target, dtype=float)
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            raise ValueError("target list must be non-empty and finite")
+        idx = np.nanargmin(np.abs(arr - sigma_rmax))
+        return float(arr[idx])
 
 
 def probe_brackets(
-    brackets: Sequence[Tuple[float, float]],
-    r0: float,
-    r_max: float,
-    p_eqState: Callable[[float], float],
-    rho_eqState: Callable[[float], float],
-    xi_val: float,
-    rho0: float,
-    frac_pc: float,
-    method: str,
-    m2_val: float,
-    lmbda_val: float,
-    nu_val: float,
-    abs_threshold: float,
-    tol_relative: float,
-    merge_tol: float,
-    target: float | Sequence[float] = 0.0,
+    brackets,
+    r0,
+    r_max,
+    p_eqState,
+    rho_eqState,
+    xi_val,
+    rho0,
+    frac_pc,
+    method,
+    m2_val,
+    lmbda_val,
+    nu_val,
+    abs_threshold,
+    tol_relative,
+    merge_tol,
+    target=0.0,
     idx_sigma: int = 2,
     *,
-    parallel: bool = False,
-    max_workers: int | None = None,
-    allow_minimize_fallback: bool = True,
-) -> Tuple[List[float], List[float]]:
-    """Refine brackets, find candidate σ0 roots, filter accepted ones."""
+    parallel=False,
+    max_workers=None,
+):
+    """
+    Probe each sign-change bracket and return (s0_list, sigma_end_list), where
+    sigma_end_list contains σ(r_max) (not residuals). Near-duplicates are
+    merged within each vacuum branch when ν≠0.
 
-    candidates: List[float] = []
-    residuals: List[float] = []
-    sigma_ends: List[float] = []
-    vac_signs: List[int] = []
+    Parameters
+    ----------
+    parallel : bool, optional
+        If True, find_root_brent is invoked concurrently for each bracket.
+    max_workers : int or None, optional
+        Maximum number of worker threads used when ``parallel`` is True.
+    """
+    candidates = []
+    residuals = []  # |σ(r_max) - t_eff|
+    sigma_ends = []  # σ(r_max)
+    vac_signs = []
 
     p0 = float(p_eqState(rho0))
     eps0 = float(rho0 * c * c)
 
-    def accept_and_append(
-        s_star: float, delta: float, sigma_end: float, t_eff: float
-    ) -> None:
-        _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, m2_val, lmbda_val, nu_val)
-        psi_ok = math.isfinite(psi2) and (psi2 > 0.0)
-
+    # Helper to process the result for a single bracket
+    def process_result(u, v, s_star, delta, sigma_end, t_eff):
+        if s_star is None or (not np.isfinite(delta)):
+            custom_print(
+                f"[brent] bracket [{u/M:.3e},{v/M:.3e}] → FAILED", color="yellow"
+            )
+            return
         m0 = float(np.sqrt(max(0.0, m2_val)))
         m_vac_sq = float(m2_val + 2.0 * lmbda_val * (nu_val**2))
+
         uses_robin = ((nu_val == 0.0) and (m0 > 0.0)) or (
             (nu_val != 0.0) and (m_vac_sq > 0.0)
         )
 
         if uses_robin:
+            # accept based on Robin residual (delta)
             accept = (abs(delta) <= abs_threshold) or (
                 abs(s_star) > 0.0 and abs(delta) / abs(s_star) <= tol_relative
             )
             reason = "robin"
         else:
+            # fallback (pure quartic/log tail, or non-Yukawa asymptotics)
             accept, reason = residual_accept(
                 sigma_rmax=sigma_end,
                 sigma0=s_star,
@@ -713,6 +726,9 @@ def probe_brackets(
                 abs_threshold=abs_threshold,
                 tol_relative=tol_relative,
             )
+
+        _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, m2_val, lmbda_val, nu_val)
+        psi_ok = np.isfinite(psi2) and (psi2 > 0.0)
 
         if accept and psi_ok:
             custom_print(
@@ -723,7 +739,7 @@ def probe_brackets(
             residuals.append(float(abs(delta)))
             sigma_ends.append(float(sigma_end))
             if nu_val != 0.0:
-                vac_signs.append(1 if t_eff >= 0.0 else -1)
+                vac_signs.append(1 if t_eff >= 0 else -1)
             else:
                 vac_signs.append(0)
         else:
@@ -737,26 +753,10 @@ def probe_brackets(
                 color="red",
             )
 
-    def process_one(u: float, v: float):
-        s_star, delta, sigma_end, t_eff = find_root_brent(
-            u,
-            v,
-            r0,
-            r_max,
-            p_eqState,
-            rho_eqState,
-            xi_val,
-            m2_val,
-            lmbda_val,
-            nu_val,
-            rho0,
-            frac_pc,
-            method,
-            idx_sigma=idx_sigma,
-            target=target,
-        )
-        if (s_star is None) and allow_minimize_fallback:
-            s_star, delta, sigma_end, t_eff = _minimize_residual(
+    if not parallel:
+        # serial evaluation
+        for u, v in brackets:
+            s_star, delta, sigma_end, t_eff = find_root_brent(
                 u,
                 v,
                 r0,
@@ -772,31 +772,45 @@ def probe_brackets(
                 method,
                 idx_sigma=idx_sigma,
                 target=target,
-                abs_cut=abs_threshold,
             )
-        if s_star is None:
-            custom_print(
-                f"[root] bracket [{u/M:.3e},{v/M:.3e}] → FAILED", color="yellow"
-            )
-            return
-        accept_and_append(float(s_star), float(delta), float(sigma_end), float(t_eff))
-
-    if not parallel:
-        for u, v in brackets:
-            process_one(float(u), float(v))
+            process_result(u, v, s_star, delta, sigma_end, t_eff)
     else:
-        with ThreadPoolExecutor(max_workers=max_workers or (os.cpu_count() or 8)) as ex:
-            list(ex.map(lambda uv: process_one(float(uv[0]), float(uv[1])), brackets))
+        # parallel evaluation: dispatch each bracket concurrently
+        tasks = [
+            (
+                u,
+                v,
+                r0,
+                r_max,
+                p_eqState,
+                rho_eqState,
+                xi_val,
+                m2_val,
+                lmbda_val,
+                nu_val,
+                rho0,
+                frac_pc,
+                method,
+                idx_sigma,
+                target,
+            )
+            for (u, v) in brackets
+        ]
+        with ThreadPoolExecutor(max_workers=max_workers or os.cpu_count()) as executor:
+            for (u, v), result in zip(
+                brackets, executor.map(_bracket_root_worker, tasks)
+            ):
+                s_star, delta, sigma_end, t_eff = result
+                process_result(u, v, s_star, delta, sigma_end, t_eff)
 
-    # Merge near duplicates (per vacuum sign for nu!=0)
-    if merge_tol is not None and merge_tol > 0.0 and len(candidates) > 1:
+    if merge_tol is not None and merge_tol > 0 and len(candidates) > 1:
         grouped = {}
         for s0, res, se, vs in zip(candidates, residuals, sigma_ends, vac_signs):
             grouped.setdefault(vs, []).append((s0, res, se))
 
         merged_c, merged_r, merged_se, merged_v = [], [], [], []
         for vs, group in grouped.items():
-            group_sorted = sorted(group, key=lambda x: x[0])
+            group_sorted = sorted(group, key=lambda x: abs(x[0]))
             cur_s0, cur_r, cur_se = group_sorted[0]
             for s0, r0_c, se in group_sorted[1:]:
                 if abs(s0 - cur_s0) <= merge_tol:
@@ -823,7 +837,7 @@ def probe_brackets(
     if not candidates:
         return [], []
 
-    order = np.argsort(candidates)
+    order = np.argsort(np.abs(candidates))
     s0_sorted = [candidates[i] for i in order]
     sigma_end_sorted = [sigma_ends[i] for i in order]
     return s0_sorted, sigma_end_sorted

@@ -21,7 +21,6 @@ import csv
 import io
 import contextlib
 import traceback
-import sys
 from typing import Dict, Any, Tuple, List
 
 import numpy as np
@@ -29,7 +28,7 @@ import numpy as np
 from Utils.params import M, SM, rho0_lightS, rho0_heavyS, lmbda_to_SI, m_ev_to_SI
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics_single import custom_print
-from Utils.shooting import diagnostic_scan_with_timeout, diagnostic_scan, probe_brackets
+from Utils.shooting import diagnostic_scan, probe_brackets
 from Utils.analysis import (
     integrate_star,
     node_count_to_2R,
@@ -126,6 +125,12 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         star_weight = f"rho0={rho0:g}"
         sw = star_weight
 
+    # Print run header
+    custom_print(
+        f"\nξ = {xi_val} | µ = {m_val:.2e} | λ = {lmbda_val:.2e} | ν = {nu_val:.2e} | ν/M = {nu_val/M:.2e} | {sw} star",
+        style="bold",
+    )
+
     # Convert mass and lambda to SI units
     m2_val = 0.0
     if m_val != 0.0:
@@ -137,87 +142,39 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
     r0 = 1e-2  # m
     r_max = 3e5  # m
 
-    # custom_print("[STAGE] entering diagnostic_scan", color="yellow")
-
     # ---------- 1) adaptive diagnostic scan ----------
-    diag_timeout_sec = float(params.get("diagnostic_timeout_sec", 90.0))
-    if method == "RK45":
-        try:
-            scan = diagnostic_scan_with_timeout(
-                diag_timeout_sec,
-                r0=r0,
-                r_max=r_max,
-                p_eqState=p_eqState,
-                rho_eqState=rho_eqState,
-                xi=xi_val,
-                m2=m2_val,
-                lmbda=lmbda_val_SI,
-                nu_val=nu_val,
-                rho0=rho0,
-                frac_pc=frac_pc,
-                method=method,
-                a=a,
-                b=b,
-                n_coarse=50,
-                n_refine=50,
-                target=target_shooting,
-            )
-        except TimeoutError:
-            custom_print(
-                f"[WARN] diagnostic_scan exceeded {diag_timeout_sec:.0f}s (method={method}); retrying with BDF.",
-                color="yellow",
-                stream=sys.__stdout__,
-            )
-
-        scan = diagnostic_scan_with_timeout(
-            diag_timeout_sec,
-            r0=r0,
-            r_max=r_max,
-            p_eqState=p_eqState,
-            rho_eqState=rho_eqState,
-            xi=xi_val,
-            m2=m2_val,
-            lmbda=lmbda_val_SI,
-            nu_val=nu_val,
-            rho0=rho0,
-            frac_pc=frac_pc,
-            method="BDF",  # force stiff solver on retry
-            a=a,
-            b=b,
-            n_coarse=101,
-            n_refine=50,
-            target=target_shooting,
-        )
-    else:
-        scan = diagnostic_scan(
-            r0=r0,
-            r_max=r_max,
-            p_eqState=p_eqState,
-            rho_eqState=rho_eqState,
-            xi=xi_val,
-            m2=m2_val,
-            lmbda=lmbda_val_SI,
-            nu_val=nu_val,
-            rho0=rho0,
-            frac_pc=frac_pc,
-            method=method,
-            a=a,
-            b=b,
-            n_coarse=101,
-            n_refine=50,
-            target=target_shooting,
-        )
-
+    scan = diagnostic_scan(
+        r0=r0,
+        r_max=r_max,
+        p_eqState=p_eqState,
+        rho_eqState=rho_eqState,
+        xi=xi_val,
+        m2=m2_val,
+        lmbda=lmbda_val_SI,
+        nu_val=nu_val,
+        rho0=rho0,
+        frac_pc=frac_pc,
+        method=method,
+        a=a,
+        b=b,
+        n_coarse=41,
+        n_refine=81,
+        target=target_shooting,
+        expand_coarse_points=1,
+        detect_near_zero=True,
+        compress_brackets=True,
+    )
     brackets = scan["brackets"]
     F_coarse = scan["F_coarse"]
     custom_print(
         f"[diagnostics] adaptive scan over [{a/M:.1e},{b/M:.1e}]*M: "
-        f"{np.sum(np.isfinite(F_coarse))}/{len(F_coarse)} finite coarse samples, ",
+        f"{np.sum(np.isfinite(F_coarse))}/{len(F_coarse)} finite coarse samples, "
+        f"refined regions={len(scan['regions'])}, Brent brackets={len(brackets)}",
         color="gray",
     )
     if len(brackets) == 0:
         custom_print(
-            "No sign changes detected in diagnostic scan; no scalarized solutions found.",
+            "No promising brackets found in the given range. Scalarization does not occur here.",
             color="magenta",
         )
         return {
@@ -248,7 +205,6 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         merge_tol=merge_tol,
         target=target_shooting,
         idx_sigma=2,
-        parallel=True,
     )
     if not s0_list:
         raise RuntimeError("No σ₀ roots found; see diagnostics above.")
