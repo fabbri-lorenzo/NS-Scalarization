@@ -28,6 +28,7 @@ import csv
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, Any, Iterable, Tuple, List
 
+from glob import glob
 import numpy as np
 
 from Utils.params import (
@@ -38,6 +39,7 @@ from Utils.params import (
 )
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics_single import custom_print
+from Utils.graphics_scan import plot_scan_results
 from Utils.core import solve_model
 
 try:
@@ -66,15 +68,11 @@ def _run_single_point(
     p["xi"] = xi_val
     p["lmbda"] = lmbda_val
     p["nu"] = nu_val
-    p["m"] = m_val
+    p["mu"] = m_val
     # Update shooting targets and method accordingly
     p["target_shooting"] = [0.0] if nu_val == 0.0 else [abs(nu_val), -abs(nu_val)]
     # Determine method heuristically: replicate sz_single logic
-    p["method"] = (
-        "BDF"
-        if (xi_val <= 0.0 or lmbda_val > 1e-65 or nu_val > M * 0.1 or m_val >= 1e-11)
-        else "RK45"
-    )
+    p["method"] = "BDF"
     result = solve_model(p, rho0)
     return xi_val, lmbda_val, result
 
@@ -82,6 +80,7 @@ def _run_single_point(
 def _write_scan_row(
     writer: csv.writer,
     xi_val: float,
+    mu_val: float,
     lmbda_val: float,
     nu_val: float,
     star_tag: str,
@@ -97,6 +96,7 @@ def _write_scan_row(
         writer.writerow(
             [
                 xi_val,
+                f"{mu_val:.1e}",
                 f"{lmbda_val:.1e}",
                 f"{nu_val:.1e}",
                 star_tag,
@@ -125,6 +125,7 @@ def _write_scan_row(
         writer.writerow(
             [
                 xi_val,
+                f"{mu_val:.1e}",
                 f"{lmbda_val:.1e}",
                 f"{nu_val:.1e}",
                 star_tag,
@@ -271,7 +272,7 @@ def run_scan(
     ]
     # fixed values for the other parameter during each scan
     xi_fixed_for_lambda_scan = 100
-    lmbda_fixed_for_xi_scan = 0.0
+    lmbda_fixed_for_xi_scan = 1e-105
     # physical constants
     nu_val = 0.0
     m_val = 0.0
@@ -283,7 +284,7 @@ def run_scan(
         "frac_pc": 1e-10,
         # The following will be overridden per point
         "xi": xi_fixed_for_lambda_scan,
-        "m": m_val,
+        "mu": m_val,
         "lmbda": lmbda_fixed_for_xi_scan,
         "nu": nu_val,
         "method": "RK45",
@@ -318,6 +319,7 @@ def run_scan(
                 writer.writerow(
                     [
                         "xi",
+                        "mu",
                         "lambda",
                         "nu",
                         "rho0_tag",
@@ -357,14 +359,18 @@ def run_scan(
                         xi_hint, l_hint = futures[fut]
                         try:
                             xi_ret, l_ret, result = fut.result()
-                            _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+                            _write_scan_row(
+                                writer, xi_ret, m_val, l_ret, nu_val, tag, result
+                            )
                         except Exception as e:
                             # Log error and write a non–scalarised row
                             if tqdm is not None:
                                 tqdm.write(f"[ξ={xi_hint}] error: {e}")
                             else:
                                 custom_print(f"[ξ={xi_hint}] error: {e}", color="red")
-                            _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
+                            _write_scan_row(
+                                writer, xi_hint, m_val, l_hint, nu_val, tag, None
+                            )
 
             custom_print(
                 f"Completed ξ–scan for star {tag}. CSV saved to {csv_path}",
@@ -389,6 +395,7 @@ def run_scan(
                 writer.writerow(
                     [
                         "xi",
+                        "mu",
                         "lambda",
                         "nu",
                         "rho0_tag",
@@ -427,13 +434,17 @@ def run_scan(
                         xi_hint, l_hint = futures[fut]
                         try:
                             xi_ret, l_ret, result = fut.result()
-                            _write_scan_row(writer, xi_ret, l_ret, nu_val, tag, result)
+                            _write_scan_row(
+                                writer, xi_ret, m_val, l_ret, nu_val, tag, result
+                            )
                         except Exception as e:
                             if tqdm is not None:
                                 tqdm.write(f"[λ={l_hint}] error: {e}")
                             else:
                                 custom_print(f"[λ={l_hint}] error: {e}", color="red")
-                            _write_scan_row(writer, xi_hint, l_hint, nu_val, tag, None)
+                            _write_scan_row(
+                                writer, xi_hint, m_val, l_hint, nu_val, tag, None
+                            )
             custom_print(
                 f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
                 style="dim",
@@ -441,4 +452,26 @@ def run_scan(
 
 
 if __name__ == "__main__":
-    run_scan(stars="both", scans="lambda")
+    # run_scan(stars="both", scans="xi")
+    plot_scan_results(
+        scan="lambda_scan",
+        xi=100,
+        mu=0.0,
+        nu=0.0,
+        base_dir="Results_final/scan",
+        include_modes=(0, 1, 2),
+        markers=False,
+        dpi=600,
+        out_path="Results/QM_vs_lambda_xi100.pdf",
+    )
+    plot_scan_results(
+        scan="xi_scan",
+        lmbda=(1e-105, 1e-60),
+        mu=0.0,
+        nu=0.0,
+        base_dir="Results_final/scan",
+        include_modes=(0, 1, 2),
+        markers=False,
+        dpi=600,
+        out_path="Results/QM_vs_xi.pdf",
+    )

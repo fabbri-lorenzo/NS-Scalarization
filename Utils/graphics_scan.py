@@ -7,15 +7,20 @@ mass ratio Q/ℳ as a function of the coupling parameters λ and ξ.
 
 import os
 from glob import glob
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 from matplotlib.ticker import (
     FuncFormatter,
+    MaxNLocator,
     FixedLocator,
     NullLocator,
+    NullFormatter,
+    SymmetricalLogLocator,
 )
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
 
 from Utils.params import M as M_CONST, hbar, c
 
@@ -42,11 +47,40 @@ def _lambda_tick_formatter(M=M_CONST, decimals=1):
     return FuncFormatter(_fmt)
 
 
+def signed_sci10_even_only(y, _pos=None):
+    """Label only ±10^{even} and 0."""
+    if y == 0:
+        return r"$0$"
+
+    sign = "-" if y < 0 else ""
+    v = abs(float(y))
+    if v <= 0 or not np.isfinite(v):
+        return ""
+
+    exp = np.log10(v)
+    e = int(np.round(exp))
+
+    # label only exact decades
+    if not np.isclose(v, 10**e, rtol=0.0, atol=v * 1e-12):
+        return ""
+
+    # label only even exponents
+    if e % 4 != 0:
+        return ""
+
+    return rf"${sign}10^{{{e}}}$"
+
+
 def sci10_ticks_symlog(x, _pos):
+    """
+    Label-only formatter: show lambda values as 10^{exp}.
+
+    NOTE: Here we treat the input x as already in the "natural units" you want
+    to label. If you later want x*(ħc), reintroduce that scaling here.
+    """
     if x == 0:
         return r"$0$"
-    x_scaled = x * (hbar * c)  # relabel-only scaling
-    exp = int(np.floor(np.log10(abs(x_scaled))))
+    exp = int(np.floor(np.log10(abs(float(x)))))
     return rf"$10^{{{exp}}}$"
 
 
@@ -55,13 +89,12 @@ def sci_a10_ticks(y, _pos):
         return r"$0$"
     exp = int(np.floor(np.log10(abs(y))))
     mant = y / (10**exp)
-    # keep a compact mantissa (avoid trailing zeros); 3 sig figs is usually plenty
     return rf"${mant:.3g}\times 10^{{{exp}}}$"
-
 
 # ---------- IO ----------
 _NUMERIC_COLS = (
     "xi",
+    "mu",
     "lambda",
     "nu",
     "scalarized",
@@ -74,20 +107,24 @@ _NUMERIC_COLS = (
 
 def _load_csvs(path_or_list):
     files = (
-        glob(os.path.join(path_or_list, "*.csv"))
+        glob(os.path.join(path_or_list, "**", "*.csv"), recursive=True)
         if isinstance(path_or_list, (str, os.PathLike))
         else list(path_or_list)
     )
     if not files:
         raise FileNotFoundError(f"No CSV files found in {path_or_list!r}")
+
     dfs = []
     for f in files:
         df = pd.read_csv(f)
+        df["source_file"] = os.path.basename(f)
         for c in _NUMERIC_COLS:
             if c in df:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         dfs.append(df)
+
     df = pd.concat(dfs, ignore_index=True)
+
     # compute Q/M (dimensionless)
     if "Q_over_ADM" in df and df["Q_over_ADM"].notna().any():
         df["Q_over_M"] = df["Q_over_ADM"].astype(float)
@@ -97,367 +134,552 @@ def _load_csvs(path_or_list):
         raise ValueError(
             "Need Q_over_ADM or (Q_over_Msun & ADM_over_Msun) to compute Q/M."
         )
+
     return df
 
 
-# ---------- plotting ----------
-def plot_q_over_m_vs_lambda_at_xi(
-    path,
-    *,
-    xi_sel,  # required
-    zoom=False,
-    natural_units=False,
-    xi_tol=1e-12,
-    rho0_tag=None,
-    scalarized_only=True,
-    include_modes=None,  # e.g. (0,1,2)
-    figsize=(7.4, 4.4),
-    dpi=150,
-    out_path=None,
-):
-    df = _load_csvs(path)
-    # --- filter slice (fixed xi) ---
-    m = np.isfinite(df["xi"]) & np.isfinite(df["Q_over_M"]) & np.isfinite(df["lambda"])
-    if scalarized_only and "scalarized" in df:
-        m &= df["scalarized"] == 1
-    if rho0_tag is not None and "rho0_tag" in df:
-        m &= df["rho0_tag"].astype(str) == str(rho0_tag)
-    # xi selection (tolerant)
-    m &= np.isclose(df["xi"], float(xi_sel), rtol=0.0, atol=xi_tol)
-    d = df[m].copy()
-    if d.empty:
-        raise ValueError("No rows found for the requested slice.")
-    # --- group duplicates: one value per (mode, lambda) ---
-    if "mode_n" not in d:
-        raise ValueError("Column 'mode_n' is required.")
-    d = (
-        d.dropna(subset=["mode_n", "lambda", "Q_over_M"])
-        .assign(mode_n=d["mode_n"].astype(int))
-        .groupby(["mode_n", "lambda"], as_index=False)["Q_over_M"]
-        .median()
-    )
-    modes = sorted(d["mode_n"].unique())
-    if include_modes is not None:
-        modes = [n for n in modes if n in set(include_modes)]
-    d["lambda_plot"] = d["lambda"]
-    # --- prepare axis ---
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
-    # symlog x with custom ticks at sampled lambdas
-    lam_vals = np.sort(d["lambda_plot"].unique())
-    pos = lam_vals[lam_vals > 0]
-    linthresh = max((pos.min() * 0.5) if pos.size else 1e-70, 1e-70)
-    ax.set_xscale("symlog", linthresh=linthresh, linscale=1.0)
-    ax.set_xlim(lam_vals.min(), lam_vals.max())
-    xticks = lam_vals.tolist()
-    if 0.0 not in xticks and np.any(lam_vals == 0.0):
-        xticks = [0.0] + xticks
-    ax.xaxis.set_major_locator(FixedLocator(xticks))
-    ax.xaxis.set_minor_locator(NullLocator())
-    ax.xaxis.set_major_formatter(
-        FuncFormatter(sci10_ticks_symlog)
-        if natural_units
-        else _lambda_tick_formatter(M_CONST, decimals=1)
-    )
-    # --- styles: discrete markers, no lines ---
-    mode_colors = {0: "#f4828f", 1: "#8658C2", 2: "#1e988a"}  # per-mode colors
-
-    def _mk(marker, n):
-        c = mode_colors.get(n, "black")
-        return dict(marker=marker, mfc=c, mec=c, mew=0.8, ms=6, ls="none")
-
-    style_map = {
-        0: _mk("o", 0),
-        1: _mk("s", 1),
-        2: _mk("^", 2),
-        3: _mk("D", 3),  # fallback color for unseen modes -> black
-        4: _mk("v", 4),
-    }
-    # --- plot: scatter per node ---
-    handles = []
-    labels = []
-    for n in modes:
-        dn = d[d["mode_n"] == n].sort_values("lambda")
-        if dn.empty:
-            continue
-        st = style_map.get(
-            n, dict(marker="o", mfc="none", mec="black", mew=1.2, ms=5, ls="none")
-        )
-        h = ax.plot(dn["lambda_plot"].to_numpy(), dn["Q_over_M"].to_numpy(), **st)[0]
-        handles.append(h)
-        labels.append(rf"$n={n}$")
-    # --- horizontal bounds (±6×10⁻⁴) ---
-    ax.axhline(6e-4, color="green", linestyle="--", linewidth=1.0)
-    ax.axhline(-6e-4, color="green", linestyle="--", linewidth=1.0)
-    if zoom:
-
-        def _ticks_from_p(pmin, pmax, M=M_CONST, step=0.1):
-            P = np.round(
-                np.arange(
-                    np.ceil(pmin * 10) / 10, np.floor(pmax * 10) / 10 + 1e-9, step
-                ),
-                1,
-            )
-            X = M ** (-P)
-            return X, P
-
-        iax = inset_axes(
-            ax,
-            width="100%",
-            height="100%",
-            loc="center left",
-            bbox_to_anchor=(0.60, 0.40, 0.36, 0.30),
-            bbox_transform=ax.transAxes,
-            borderpad=0.0,
-        )
-        iax.tick_params(right=False)
-        for n in modes:
-            dn = d[d["mode_n"] == n].sort_values("lambda")
-            if dn.empty:
-                continue
-            st = style_map.get(
-                n, dict(marker="o", mfc="none", mec="black", mew=1.2, ms=5, ls="none")
-            )
-            iax.plot(dn["lambda_plot"].to_numpy(), dn["Q_over_M"].to_numpy(), **st)
-        iax.set_ylim(-10e-4, 10e-4)
-        iax.set_xscale("symlog", linthresh=linthresh, linscale=1.0)
-        iax.axhline(6e-4, color="green", linestyle="--", linewidth=1.0)
-        iax.axhline(-6e-4, color="green", linestyle="--", linewidth=1.0)
-        iax.set_yticks([-6e-4, 6e-4])
-        iax.set_yticklabels([r"$-6\times10^{-4}$", r"$6\times10^{-4}$"])
-        iax.tick_params(axis="y", which="both", direction="in", labelsize=8)
-        iax.yaxis.set_major_formatter(FuncFormatter(sci_a10_ticks))
-        iax.yaxis.get_offset_text().set_visible(False)
-        iax.set_ylim(-10e-4, 10e-4)
-        dd = d[np.abs(d["Q_over_M"]) <= 10e-4]
-        if not dd.empty:
-            xmin, xmax = dd["lambda_plot"].min(), dd["lambda_plot"].max()
-            iax.set_xlim(xmin, xmax)
-            iax.set_xscale("log")
-            iax.xaxis.set_minor_locator(NullLocator())
-            if natural_units:
-                xs = np.sort(dd["lambda_plot"].unique())
-                xs = xs[(xs >= xmin) & (xs <= xmax)]
-                if xs.size > 10:
-                    stride = int(np.ceil(xs.size / 10.0))
-                    xs = xs[::stride]
-                iax.xaxis.set_major_locator(FixedLocator(xs.tolist()))
-                iax.xaxis.set_major_formatter(FuncFormatter(sci10_ticks_symlog))
-            else:
-                pmin_i = _p_from_lambda(xmax / 1.0)
-                pmax_i = _p_from_lambda(xmin / 1.0)
-                xticks_in, _ = _ticks_from_p(
-                    min(pmin_i, pmax_i), max(pmin_i, pmax_i), M_CONST, step=0.1
-                )
-                xticks_in = [t for t in xticks_in if xmin <= t <= xmax]
-                iax.xaxis.set_major_locator(FixedLocator(xticks_in))
-                iax.xaxis.set_major_formatter(
-                    _lambda_tick_formatter(M_CONST, decimals=1)
-                )
-        for s in ("top", "right", "bottom", "left"):
-            iax.spines[s].set_linewidth(0.8)
-    # --- labels & cosmetics ---
-    ax.set_xlabel(r"$\lambda$")
-    ax.set_ylabel(r"$Q/\mathcal{M}$")
-    ax.yaxis.set_major_formatter(FuncFormatter(sci_a10_ticks))
-    ax.yaxis.get_offset_text().set_visible(False)
-    ax.grid(False)
-    ax.tick_params(direction="in", which="both", top=True, right=True)
-    for s in ("top", "right", "bottom", "left"):
-        ax.spines[s].set_linewidth(1.0)
-    ax.set_title(rf"$\xi={xi_sel:g}$", pad=6)
-    if handles:
-        ax.legend(
-            handles,
-            labels,
-            ncol=1,
-            loc="upper right",
-            bbox_to_anchor=(0.98, 0.98),
-            frameon=True,
-            handlelength=1.0,
-            columnspacing=0.8,
-        )
-    if out_path:
-        fig.savefig(out_path, bbox_inches="tight")
-    plt.show()
-    return fig, ax
-
-
-def plot_q_over_m_vs_xi_at_lambda(
-    path,
-    *,
-    lmbda_sel,
-    zoom=False,
-    natural_units=False,
-    lmbda_tol=1e-12,
-    rho0_tag=None,
-    scalarized_only=True,
-    include_modes=None,
-    figsize=(7.4, 4.4),
-    dpi=150,
-    out_path=None,
-):
-    """Plot Q/ℳ as a function of ξ for a fixed λ.
-
-    Parameters
-    ----------
-    path : str or list
-        Directory containing CSV files produced by :mod:`sz_scan` or a list of
-        CSV files.  All files must contain the columns 'xi', 'lambda',
-        'mode_n' and either 'Q_over_Msun' & 'ADM_over_Msun' or 'Q_over_ADM'.
-
-    lmbda_sel : float
-        The value of λ in SI units at which to slice the data.  Rows with
-        λ within ``lmbda_tol`` of this value are retained.
-
-    zoom : bool, optional
-        If True, draw an inset axis zooming into the region |Q/M| ≤ 10⁻³.
-
-    natural_units : bool, optional
-        If True, format the vertical axis labels in natural units using
-        :func:`sci_a10_ticks`.  Otherwise SI units are used.
-
-    lmbda_tol : float, optional
-        Absolute tolerance for matching λ values.
-
-    rho0_tag : str, optional
-        If provided, restrict the dataset to the specified star tag ('L' or
-        'H').  Any other tag values are ignored.  If None, all stars are
-        included.
-
-    scalarized_only : bool, optional
-        When True (default) drop rows where the 'scalarized' column is
-        zero, retaining only points where scalarisation occurred.
-
-    include_modes : iterable of int, optional
-        Restrict the plot to the specified mode numbers.  If None, all
-        modes present in the data are plotted.
-
-    figsize : tuple, optional
-        Figure size in inches.
-
-    dpi : int, optional
-        Figure resolution in dots per inch.
-
-    out_path : str, optional
-        If given, save the plot to this path; otherwise display it on
-        screen.
-
-    Returns
-    -------
-    (fig, ax) : tuple
-        The Matplotlib figure and axes objects.
+def _drop_ticks_too_close_to_zero(ax, ticks, *, min_sep_px=14):
     """
-    df = _load_csvs(path)
-    # Filter slice (fixed λ)
-    m = np.isfinite(df["lambda"]) & np.isfinite(df["Q_over_M"]) & np.isfinite(df["xi"])
-    if scalarized_only and "scalarized" in df:
-        m &= df["scalarized"] == 1
-    if rho0_tag is not None and "rho0_tag" in df:
-        m &= df["rho0_tag"].astype(str) == str(rho0_tag)
-    # λ selection (tolerant)
-    m &= np.isclose(
-        df["lambda"].astype(float), float(lmbda_sel), rtol=0.0, atol=lmbda_tol
-    )
-    d = df[m].copy()
-    if d.empty:
-        raise ValueError("No rows found for the requested slice.")
-    if "mode_n" not in d:
-        raise ValueError("Column 'mode_n' is required.")
-    # group duplicates: one value per (mode, xi)
-    d = (
-        d.dropna(subset=["mode_n", "xi", "Q_over_M"])
-        .assign(mode_n=d["mode_n"].astype(int))
-        .groupby(["mode_n", "xi"], as_index=False)["Q_over_M"]
-        .median()
-    )
-    modes = sorted(d["mode_n"].unique())
-    if include_modes is not None:
-        modes = [n for n in modes if n in set(include_modes)]
-    # prepare axis
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
-    xi_vals = np.sort(d["xi"].unique())
-    ax.set_xlim(xi_vals.min(), xi_vals.max())
-    ax.xaxis.set_major_locator(FixedLocator(xi_vals.tolist()))
-    ax.xaxis.set_minor_locator(NullLocator())
-    # style: discrete markers, no lines
-    mode_colors = {0: "#f4828f", 1: "#8658C2", 2: "#1e988a"}
+    Remove symmetric tick pairs that are too close (in screen pixels) to the 0 tick,
+    to avoid label/mark superposition near the symlog linear region.
 
-    def _mk(marker, n):
-        c = mode_colors.get(n, "black")
-        return dict(marker=marker, mfc=c, mec=c, mew=0.8, ms=6, ls="none")
+    Keeps 0 if present. Drops both +t and -t together.
+    """
+    # Need a draw so transforms know the final layout (important when saving to PDF)
+    ax.figure.canvas.draw()
 
-    style_map = {
-        0: _mk("o", 0),
-        1: _mk("s", 1),
-        2: _mk("^", 2),
-        3: _mk("D", 3),
-        4: _mk("v", 4),
+    trans = ax.transData
+    y0_px = trans.transform((0.0, 0.0))[1]
+
+    ticks_set = set(float(t) for t in ticks)
+    keep = set([0.0]) if 0.0 in ticks_set else set()
+
+    # consider positive ticks only, then keep them symmetrically
+    pos = sorted([t for t in ticks_set if t > 0], reverse=True)
+
+    for t in pos:
+        y_px = trans.transform((0.0, t))[1]
+        if abs(y_px - y0_px) < min_sep_px:
+            # too close -> stop adding smaller decades (they'll be even closer)
+            break
+        keep.add(t)
+        if -t in ticks_set:
+            keep.add(-t)
+
+    # preserve original ordering
+    return [t for t in ticks if float(t) in keep]
+
+
+# ---------- plotting ----------
+def _plot_with_gaps(ax, x, y, *, max_dx, **plot_kw):
+    """
+    Plot (x,y) but break the curve whenever consecutive x points are farther
+    apart than max_dx. This prevents connecting across missing scan regions.
+    """
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+    if x.size == 0:
+        return
+
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+
+    dx = np.diff(x)
+    breaks = np.where(dx > max_dx)[0]
+
+    start = 0
+    for b in breaks:
+        end = b + 1
+        if end - start >= 2:
+            ax.plot(x[start:end], y[start:end], **plot_kw)
+        start = end
+
+    if x.size - start >= 2:
+        ax.plot(x[start:], y[start:], **plot_kw)
+
+
+def plot_scan_results(
+    *,
+    base_dir="Results/scan",
+    scan="lambda_scan",  # "lambda_scan" or "xi_scan"
+    xi=None,
+    lmbda=None,  # float or list of floats for xi_scan
+    mu=0.0,
+    nu=0.0,
+    stars=("L", "H"),
+    include_modes=None,  # e.g. (0,1,2)
+    scalarized_only=True,
+    xi_tol=1e-12,
+    figsize=(7.4, 4.4),
+    dpi=300,
+    out_path=None,
+    natural_units=True,
+    connect_points=True,
+    markers=False,
+    lw=1.6,
+    ms=4.5,
+    gap_factor=1.5,  # break if dx > gap_factor * (estimated xi step)
+    # headroom
+    x_pad_frac=0.03,  # add padding ONLY on the right
+    y_pad_decades=0.25,  # symmetric y headroom (in decades)
+):
+    """
+    High-level dispatcher for paper figures from sz_scan.py CSVs.
+
+    - scan="lambda_scan": Q/M vs lambda at fixed xi
+    - scan="xi_scan":     Q/M vs xi at fixed lambda (supports multiple lambdas)
+
+    Overlays Light (L) and Heavy (H) on the same axes.
+    Uses a signed "log-like" y-axis (symlog) with:
+      - y minor ticks every decade (tick marks only)
+      - y major ticks every 2 decades (labeled)
+    For x-axis:
+      - ticks at every scanned point
+      - labels every 2 points
+    """
+    df = _load_csvs(base_dir)
+
+    # --- filter by scan type via filenames (avoid mixing xi_scan and lambda_scan) ---
+    scan_norm = str(scan).strip().lower()
+    if scan_norm in ("lambda_scan", "lmbda_scan", "lambda"):
+        df = df[
+            df["source_file"]
+            .astype(str)
+            .str.contains("lmbda_scan|lambda_scan", regex=True, na=False)
+        ]
+    elif scan_norm in ("xi_scan", "xi"):
+        df = df[
+            df["source_file"].astype(str).str.contains("xi_scan", regex=True, na=False)
+        ]
+    else:
+        raise ValueError("scan must be 'lambda_scan' or 'xi_scan'.")
+
+    required = {
+        "xi",
+        "mu",
+        "lambda",
+        "nu",
+        "rho0_tag",
+        "scalarized",
+        "mode_n",
+        "Q_over_M",
     }
-    handles = []
-    labels = []
-    for n in modes:
-        dn = d[d["mode_n"] == n].sort_values("xi")
-        if dn.empty:
-            continue
-        st = style_map.get(
-            n, dict(marker="o", mfc="none", mec="black", mew=1.2, ms=5, ls="none")
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns in CSV(s): {missing}")
+
+    # ---- base mask (common filters) ----
+    m = (
+        np.isfinite(df["xi"])
+        & np.isfinite(df["mu"])
+        & np.isfinite(df["lambda"])
+        & np.isfinite(df["nu"])
+    )
+
+    if scalarized_only and "scalarized" in df.columns:
+        m &= pd.to_numeric(df["scalarized"], errors="coerce") == 1
+
+    # nu filter
+    m &= np.isclose(
+        pd.to_numeric(df["nu"], errors="coerce"), float(nu), atol=1e-15, rtol=0.0
+    )
+    # mu filter
+    m &= np.isclose(
+        pd.to_numeric(df["mu"], errors="coerce"), float(mu), atol=1e-15, rtol=0.0
+    )
+
+    # star filter
+    stars = tuple(str(s) for s in stars)
+    m &= df["rho0_tag"].astype(str).isin(stars)
+
+    # ---- scan selection + x axis choice ----
+    if scan_norm in ("lambda_scan", "lmbda_scan", "lambda"):
+        if xi is None:
+            raise ValueError("scan='lambda_scan' requires xi=...")
+        m &= np.isclose(
+            pd.to_numeric(df["xi"], errors="coerce"), float(xi), atol=xi_tol, rtol=0.0
         )
-        h = ax.plot(dn["xi"].to_numpy(), dn["Q_over_M"].to_numpy(), **st)[0]
-        handles.append(h)
-        labels.append(rf"$n={n}$")
-    # horizontal bounds (±6×10⁻⁴)
-    ax.axhline(6e-4, color="green", linestyle="--", linewidth=1.0)
-    ax.axhline(-6e-4, color="green", linestyle="--", linewidth=1.0)
-    if zoom:
-        iax = inset_axes(
-            ax,
-            width="100%",
-            height="100%",
-            loc="center left",
-            bbox_to_anchor=(0.60, 0.40, 0.36, 0.30),
-            bbox_transform=ax.transAxes,
-            borderpad=0.0,
+
+        xcol = "lambda"
+        xlabel = r"$\lambda$"
+        title = rf"$\xi={float(xi):g}$, $\mu={float(mu):g}$, $v={float(nu):g}$"
+        lmbda_list = [None]  # not used here
+
+    else:
+        # xi_scan
+        if lmbda is None:
+            raise ValueError("scan='xi_scan' requires lmbda=... (float or list)")
+
+        lmbda_list = (
+            list(lmbda)
+            if isinstance(lmbda, (list, tuple, np.ndarray))
+            else [float(lmbda)]
         )
-        iax.tick_params(right=False)
-        for n in modes:
-            dn = d[d["mode_n"] == n].sort_values("xi")
-            if dn.empty:
-                continue
-            st = style_map.get(
-                n, dict(marker="o", mfc="none", mec="black", mew=1.2, ms=5, ls="none")
+
+        xcol = "xi"
+        xlabel = r"$\xi$"
+        title = rf"$\mu={float(mu):g}$, $v={float(nu):g}$"
+
+    # ---- figure ----
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
+
+    # styling: color=mode, linestyle=star
+    mode_colors = {0: "#1f77b4", 1: "#8658C2", 2: "#f4828f", 3: "#1e988a"}
+    star_ls = {"L": "-", "H": "--"}
+    mode_markers = {0: "o", 1: "s", 2: "^", 3: "D", 4: "v"}
+
+    # estimate xi step for gap breaking (only needed for xi_scan)
+    xi_unique = np.sort(pd.to_numeric(df["xi"], errors="coerce").dropna().unique())
+    xi_step = float(np.median(np.diff(xi_unique))) if xi_unique.size >= 2 else 0.25
+    max_dx_gap = float(gap_factor) * xi_step
+
+    # Will be set for lambda_scan
+    lam_order = None
+
+    # Track what actually got plotted (for ticks/legends/limits)
+    ys_plotted = []
+    xs_plotted = []
+    modes_plotted = set()
+
+    # ----- Lambda legend handles (xi_scan only) -----
+    lambda_handles = []
+    if xcol == "xi":
+
+        def _lam_label(lam, i):
+            lam = float(lam)
+            if lam == 0.0:
+                return rf"$\lambda = 0$"
+            exp = int(np.floor(np.log10(abs(lam))))
+            return rf"$\lambda = 10^{{{exp}}}$"
+
+        for i, L in enumerate(lmbda_list):
+            lambda_handles.append(
+                mlines.Line2D([], [], color="none", label=_lam_label(L, i))
             )
-            iax.plot(dn["xi"].to_numpy(), dn["Q_over_M"].to_numpy(), **st)
-        iax.set_ylim(-10e-4, 10e-4)
-        iax.set_xlim(xi_vals.min(), xi_vals.max())
-        iax.xaxis.set_major_locator(FixedLocator(xi_vals.tolist()))
-        iax.xaxis.set_minor_locator(NullLocator())
-        iax.yaxis.set_major_formatter(FuncFormatter(sci_a10_ticks))
-        iax.yaxis.get_offset_text().set_visible(False)
-        iax.tick_params(axis="y", which="both", direction="in", labelsize=8)
-        for s in ("top", "right", "bottom", "left"):
-            iax.spines[s].set_linewidth(0.8)
-    # labels & cosmetics
-    ax.set_xlabel(r"$\xi$")
+            i += 1
+
+    any_plotted = False
+
+    # ---- plot per lambda slice (xi_scan can have multiple) ----
+    for lmbda_sel in lmbda_list:
+        if xcol == "xi":
+            lam_col = pd.to_numeric(df["lambda"], errors="coerce").to_numpy(dtype=float)
+            lam_sel = float(lmbda_sel)
+
+            if lam_sel == 0.0:
+                m_local = m & (lam_col == 0.0)
+            else:
+                # relative match for tiny numbers; absolute tol must be 0 here
+                m_local = m & np.isclose(lam_col, lam_sel, rtol=1e-6, atol=0.0)
+
+            d = df[m_local].copy()
+        else:
+            d = df[m].copy()
+
+        if d.empty:
+            continue
+
+        # keep only rows with valid Q/M
+        d = d[np.isfinite(d["Q_over_M"])]
+
+        d["mode_n"] = pd.to_numeric(d["mode_n"], errors="coerce")
+        d = d.dropna(subset=["mode_n", xcol, "Q_over_M"])
+        d["mode_n"] = d["mode_n"].astype(int)
+
+        if include_modes is not None:
+            include_modes_set = set(int(n) for n in include_modes)
+            d = d[d["mode_n"].isin(include_modes_set)]
+
+        if d.empty:
+            continue
+
+        # deduplicate: median per (star, mode, x)
+        d[xcol] = pd.to_numeric(d[xcol], errors="coerce")
+        d = (
+            d.groupby(["rho0_tag", "mode_n", xcol], as_index=False)["Q_over_M"]
+            .median()
+            .sort_values(["rho0_tag", "mode_n", xcol])
+        )
+
+        # draw curves
+        for star in stars:
+            for n in sorted(d["mode_n"].unique()):
+                dn = d[(d["rho0_tag"] == star) & (d["mode_n"] == n)].sort_values(xcol)
+                if dn.empty:
+                    continue
+
+                if xcol == "lambda":
+                    x = dn["lambda"].to_numpy(dtype=float)
+                else:
+                    x = dn["xi"].to_numpy(dtype=float)
+
+                y = dn["Q_over_M"].to_numpy(dtype=float)
+                mask = np.isfinite(x) & np.isfinite(y)
+                if not np.any(mask):
+                    continue
+
+                kw = dict(
+                    color=mode_colors.get(n, "black"),
+                    linestyle=star_ls.get(star, "-."),
+                    linewidth=lw if connect_points else 0.0,
+                    marker=(mode_markers.get(n, "o") if markers else None),
+                    markersize=(ms if markers else 0.0),
+                    markerfacecolor=mode_colors.get(n, "black"),
+                    markeredgecolor=mode_colors.get(n, "black"),
+                    markeredgewidth=0.6,
+                )
+
+                xx = x[mask]
+                yy = y[mask]
+
+                if xcol == "xi":
+                    _plot_with_gaps(ax, xx, yy, max_dx=max_dx_gap, **kw)
+                else:
+                    ax.plot(xx, yy, **kw)
+
+                xs_plotted.append(xx)
+                ys_plotted.append(yy)
+                modes_plotted.add(int(n))
+                any_plotted = True
+
+    if not any_plotted:
+        raise ValueError("Nothing was plotted (no matching data after filtering).")
+
+    # bounds
+    ax.axhline(6e-4, color="gray", linestyle="--", linewidth=1.0)
+    ax.axhline(-6e-4, color="gray", linestyle="--", linewidth=1.0)
+
+    # ---------------- X axis formatting: ticks at every point, labels every 2 ----------------
+    if xcol == "lambda":
+        # Use real lambda values on a symlog x-axis (to allow lambda=0)
+        lam_all = np.concatenate([xx[np.isfinite(xx)] for xx in xs_plotted if xx.size])
+        lam_pos = lam_all[lam_all > 0.0]
+        if lam_pos.size == 0:
+            raise ValueError("No positive lambda values to set a log scale.")
+
+        linthresh_x = (
+            float(np.min(lam_pos)) * 0.5
+        )  # transition near smallest positive λ
+        ax.set_xscale("symlog", linthresh=linthresh_x, linscale=1.0, base=10)
+
+        # Nice decade ticks (minor every decade; major every 2 decades)
+        emax = int(np.floor(np.log10(np.max(lam_pos))))
+        emin = int(np.floor(np.log10(np.min(lam_pos))))
+
+        # minor ticks every decade
+        minor = [0.0] + [10.0**e for e in range(emin, emax + 1)]
+        ax.xaxis.set_minor_locator(FixedLocator(minor))
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.tick_params(axis="x", which="minor", length=3)
+
+        # major ticks every 2 decades
+        major = [0.0] + [10.0**e for e in range(emin, emax + 1, 2)]
+        ax.xaxis.set_major_locator(FixedLocator(major))
+
+        def _fmt_lam(x, _pos):
+            if x == 0.0:
+                return r"$0$"
+            exp = int(np.round(np.log10(abs(float(x)))))
+            return rf"$10^{{{exp}}}$"
+
+        ax.xaxis.set_major_formatter(FuncFormatter(_fmt_lam))
+        ax.tick_params(axis="x", which="major", length=4)
+
+    else:
+        # xi scan: clean symmetric ticks with ONE minor tick between majors
+        xi_all = np.sort(pd.to_numeric(df[m]["xi"], errors="coerce").dropna().unique())
+        if xi_all.size == 0:
+            raise ValueError("No xi points available after filtering.")
+
+        xmin, xmax = float(xi_all.min()), float(xi_all.max())
+        ax.set_xlim(xmin, xmax)
+
+        # --- Major ticks (labeled) ---
+        # If symmetric like [-10, 10], force the clean 5-point grid
+        if np.isclose(xmin, -xmax, atol=1e-12):
+            A = max(abs(xmin), abs(xmax))
+            major_ticks = [-A, -A / 2, 0.0, A / 2, A]
+        else:
+            # fallback: 5 evenly spaced nice ticks
+            major_ticks = np.linspace(xmin, xmax, 5)
+
+        ax.xaxis.set_major_locator(FixedLocator(major_ticks))
+        ax.tick_params(axis="x", which="major", length=4)
+
+        def _fmt_xi(x, _pos):
+            if np.isclose(x, round(x), atol=1e-10):
+                return rf"${int(round(x))}$"
+            return rf"${x:.1f}$"
+
+        ax.xaxis.set_major_formatter(FuncFormatter(_fmt_xi))
+
+        # --- Minor ticks: subdivide each major interval ---
+        minor_ticks = []
+
+        n_sub = 5  # number of subdivisions per interval
+
+        for i in range(len(major_ticks) - 1):
+            left = major_ticks[i]
+            right = major_ticks[i + 1]
+            step = (right - left) / n_sub
+
+            for k in range(1, n_sub):
+                minor_ticks.append(left + k * step)
+
+        ax.xaxis.set_minor_locator(FixedLocator(minor_ticks))
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.tick_params(axis="x", which="minor", length=3)
+
+        # --- EMG shaded region ---
+        xi_emg_min = 0.0
+        xi_emg_max = 0.63
+
+        ax.axvspan(
+            xi_emg_min, xi_emg_max, color="#3274e6", alpha=0.5, zorder=0  # soft blue
+        )
+
+        # EMG label centered in region
+        x_center = 0.5 * (xi_emg_min + xi_emg_max)
+        ymin, ymax = ax.get_ylim()
+        y_center = 0.5 * ymax
+
+        ax.text(
+            -1.1,
+            1e-1,
+            r"$\mathrm{EMG}$",
+            fontsize=10,
+            color="#3274e6",
+            zorder=5,
+        )
+
+    # ---------------- Y axis formatting: symlog + symmetric + minor every decade ----------------
+    if not ys_plotted:
+        raise ValueError("No finite y-data was plotted.")
+    y_all = np.concatenate([yy[np.isfinite(yy)] for yy in ys_plotted if yy.size])
+    yabs = np.abs(y_all[y_all != 0.0])
+    if yabs.size == 0:
+        yabs = np.array([1.0])
+
+    y_abs_min = float(np.min(yabs))
+    linthresh_y = max(1e-12, 0.5 * y_abs_min)
+
+    ax.set_yscale("symlog", linthresh=linthresh_y, linscale=1.0)
+
+    ax.yaxis.set_major_locator(
+        SymmetricalLogLocator(base=10, linthresh=linthresh_y, subs=(1.0,))
+    )
+    ax.yaxis.set_minor_locator(
+        SymmetricalLogLocator(
+            base=10, linthresh=linthresh_y, subs=np.arange(2, 10) * 0.1
+        )
+    )
+
+    y_abs_max = float(np.max(yabs))
+    pad_factor = 1e3 ** float(y_pad_decades)
+    ylim = y_abs_max * pad_factor
+    ax.set_ylim(-ylim, +ylim)  # symmetric: avoids “disappearing branch”
+
+    # Build decade ticks
+    e_max = int(np.ceil(np.log10(ylim))) if ylim > 0 else 0
+    e_min = int(np.ceil(np.log10(linthresh_y)))  # stop before too close to 0
+
+    # minor ticks: every decade
+    exps_minor = list(range(e_max, e_min - 1, -1))
+    minor_pos = [10.0**e for e in exps_minor]
+    minor_ticks = sorted([-t for t in minor_pos] + [0.0] + minor_pos)
+
+    # major ticks: every 2 decades (labeled)
+    exps_major = list(range(e_max, e_min - 1, -2))
+    major_pos = [10.0**e for e in exps_major]
+    major_ticks = sorted([-t for t in major_pos] + [0.0] + major_pos)
+
+    # Drop ticks too close to 0 (pixel-aware)
+    major_ticks = _drop_ticks_too_close_to_zero(ax, major_ticks, min_sep_px=14)
+    minor_ticks = _drop_ticks_too_close_to_zero(ax, minor_ticks, min_sep_px=10)
+
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.yaxis.set_major_formatter(FuncFormatter(signed_sci10_even_only))
+
+    ax.tick_params(axis="y", which="minor", length=3)
+    ax.tick_params(axis="y", which="major", length=4)
+
+    # cosmetics
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(r"$Q/\mathcal{M}$")
-    ax.yaxis.set_major_formatter(FuncFormatter(sci_a10_ticks))
-    ax.yaxis.get_offset_text().set_visible(False)
     ax.grid(False)
     ax.tick_params(direction="in", which="both", top=True, right=True)
     for s in ("top", "right", "bottom", "left"):
         ax.spines[s].set_linewidth(1.0)
-    ax.set_title(rf"$\lambda={lmbda_sel:g}$", pad=6)
-    if handles:
-        ax.legend(
-            handles,
-            labels,
-            ncol=1,
-            loc="upper right",
-            bbox_to_anchor=(0.98, 0.98),
-            frameon=True,
-            handlelength=1.0,
-            columnspacing=0.8,
+    ax.set_title(title, pad=6)
+
+    # ---------------- Legends (separate blocks) ----------------
+    # Star legend
+    star_handles = [
+        mlines.Line2D(
+            [0], [0], color="black", linestyle="-", linewidth=1.8, label="Light star"
+        ),
+        mlines.Line2D(
+            [0], [0], color="black", linestyle="--", linewidth=1.8, label="Heavy star"
+        ),
+    ]
+    leg_star = ax.legend(
+        handles=star_handles,
+        loc="lower right",
+        bbox_to_anchor=(1, 0.025),
+        frameon=True,
+    )
+    ax.add_artist(leg_star)
+
+    # Mode legend
+    mode_handles = []
+    for n in sorted(modes_plotted):
+        mode_handles.append(
+            mlines.Line2D(
+                [0],
+                [0],
+                color=mode_colors.get(n, "black"),
+                linestyle="-",
+                linewidth=1.8,
+                label=rf"$n={n}$",
+            )
         )
+    leg_mode = ax.legend(
+        handles=mode_handles,
+        loc="lower right",
+        bbox_to_anchor=(1, 0.15),  # xi scan
+        # bbox_to_anchor=(1, 0.3), #lambda scan
+        frameon=True,
+    )
+    ax.add_artist(leg_mode)
+
+    # Lambda legend (xi_scan only) — no handle column => no white space
+    # if lambda_handles:
+    #    leg_lambda = ax.legend(
+    #        handles=lambda_handles,
+    #        loc="right",
+    #        bbox_to_anchor=(1, 0.4),
+    #        frameon=True,
+    #        handlelength=0.0,
+    #        handletextpad=0.2,
+    #        borderpad=0.6,
+    #        labelspacing=0.4,
+    #    )
+    #    ax.add_artist(leg_lambda)
+
+    # ---------------- X headroom ONLY on the right ----------------
+    x_pad_frac = 10 if scan == "lambda_scan" else 0.0
+    if xs_plotted:
+        xs = np.concatenate([xx[np.isfinite(xx)] for xx in xs_plotted if xx.size])
+        if xs.size:
+            xmin, xmax = float(np.min(xs)), float(np.max(xs))
+            if np.isfinite(xmin) and np.isfinite(xmax) and xmax > xmin:
+                dx = (xmax - xmin) * float(x_pad_frac)
+                ax.set_xlim(xmin, xmax + dx)
+
     if out_path:
         fig.savefig(out_path, bbox_inches="tight")
-    plt.show()
+
     return fig, ax

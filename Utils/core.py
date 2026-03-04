@@ -25,7 +25,15 @@ from typing import Dict, Any, Tuple, List
 
 import numpy as np
 
-from Utils.params import M, SM, rho0_lightS, rho0_heavyS, lmbda_to_SI, m_ev_to_SI
+from Utils.params import (
+    M,
+    SM,
+    rho0_lightS,
+    rho0_heavyS,
+    lmbda_to_SI,
+    m_ev_to_SI,
+    nu_ev_to_SI,
+)
 from Utils.EOS import p_SLy4, rho_SLy4
 from Utils.graphics_single import custom_print
 from Utils.shooting import diagnostic_scan, probe_brackets
@@ -127,7 +135,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
 
     # Print run header
     custom_print(
-        f"\nξ = {xi_val} | µ = {m_val:.2e} | λ = {lmbda_val:.2e} | ν = {nu_val:.2e} | ν/M = {nu_val/M:.2e} | {sw} star",
+        f"\nξ = {xi_val} | µ = {m_val:.2e} eV | λ = {lmbda_val:.2e} | ν = {nu_val:.2e} eV | {sw} star",
         style="bold",
     )
 
@@ -137,6 +145,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         m_val_SI = m_ev_to_SI(m_val)
         m2_val = m_val_SI**2
     lmbda_val_SI = lmbda_to_SI(lmbda_val)
+    nu_val_SI = nu_ev_to_SI(nu_val)
 
     # Integration radial domain
     r0 = 1e-2  # m
@@ -151,18 +160,19 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         xi=xi_val,
         m2=m2_val,
         lmbda=lmbda_val_SI,
-        nu_val=nu_val,
+        nu_val=nu_val_SI,
         rho0=rho0,
         frac_pc=frac_pc,
         method=method,
         a=a,
         b=b,
         n_coarse=41,
-        n_refine=81,
+        n_refine=41,
         target=target_shooting,
         expand_coarse_points=1,
         detect_near_zero=True,
         compress_brackets=True,
+        parallel=True,
     )
     brackets = scan["brackets"]
     F_coarse = scan["F_coarse"]
@@ -199,7 +209,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         method=method,
         m2_val=m2_val,
         lmbda_val=lmbda_val_SI,
-        nu_val=nu_val,
+        nu_val=nu_val_SI,
         abs_threshold=abs_cut,
         tol_relative=rel_cut,
         merge_tol=merge_tol,
@@ -213,7 +223,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
 
     # ---------- 3) integrate each σ₀ candidate to 2R and classify modes ----------
     per_mode: Dict[int, List[Dict[str, Any]]] = {}
-    nu_abs = abs(nu_val)
+    nu_abs = abs(nu_val_SI)
     for s0 in s0_list:
         sol, mu2_log, R_star_m = integrate_star(
             s0,
@@ -224,7 +234,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
             xi_val,
             m2_val,
             lmbda_val_SI,
-            nu_val,
+            nu_val_SI,
             rho0,
             frac_pc,
             method=method,
@@ -333,7 +343,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
                 xi_val,
                 m2_val,
                 lmbda_val_SI,
-                nu_val,
+                nu_val_SI,
                 rho0,
                 frac_pc,
                 method=method,
@@ -350,7 +360,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
                 xi_val,
                 m2_val,
                 lmbda_val_SI,
-                nu_val,
+                nu_val_SI,
                 rho0,
                 frac_pc,
                 method=method,
@@ -359,7 +369,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
             )
             ADM_mass = adm_mass_from_sol(sol_bnd, k_tail=15)
             scalar_charge = scal_charge_from_sol(
-                sol_bnd, m2_val, lmbda_val_SI, nu_val, r_max
+                sol_bnd, m2_val, lmbda_val_SI, nu_val_SI, r_max
             )
             # determine vacuum sign of this solution
             if nu_val != 0.0:

@@ -15,11 +15,13 @@ into :mod:`Utils.core` for modularity.
 """
 
 import time
+import numpy as np
 from itertools import repeat
 from concurrent.futures import ProcessPoolExecutor
 
 from Utils.params import (
     M,
+    v_higgs,
     rho0_lightS,
     rho0_heavyS,
 )
@@ -35,13 +37,14 @@ rho_eqState = rho_SLy4
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 # Physical couplings
-xi = 100
-m = 0.0  # scalar mass (eV)
-lmbda = 1e-76  # self–coupling (dimensionless)
-nu = 0.0  # vacuum expectation value
+m = 1e-5  # scalar mass (eV)
+lmbda = 0.0  # self–coupling (dimensionless)
+nu = 0.0  # vacuum expectation value (eV)
+xi = 10  # non-minimal coupling
+# xi = 49000 * np.sqrt(lmbda)  # non-minimal coupling
 
 # Choose integrator method based on parameter regime
-method = "BDF" if (xi <= 0.0 or lmbda > 1e-65 or nu > M * 0.1 or m >= 1e-11) else "RK45"
+method = "BDF"
 
 # Shooting parameters
 a, b = 1e-10 * M, M  # bracket for σ₀
@@ -53,7 +56,7 @@ merge_tol = a * 1e-2
 def main() -> None:
     # Print run header
     custom_print(
-        f"\nξ = {xi} | µ = {m:.2e} | λ = {lmbda:.2e} | ν = {nu:.2e} | ν/M = {nu/M:.2e}",
+        f"\nξ = {xi:.0g} | µ = {m:.2e} | λ = {lmbda:.2e} | ν = {nu:.2e} | ν/M = {nu/M:.2e}",
         style="bold",
     )
     """Run the solver for light and heavy stars and plot results."""
@@ -108,7 +111,7 @@ def main() -> None:
         vacuum_sols = result["vacuum_sols"]
         nu_val = result["nu_val"]
 
-        plotResults_multi(plot_entries, nu_val, vacuum_sols, path)
+        plotResults_multi(plot_entries, xi, m, nu_val, vacuum_sols, path)
 
 
 if __name__ == "__main__":

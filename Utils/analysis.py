@@ -384,14 +384,6 @@ def integrate_star(
     stop_at_2r=True,
     record_mu2=False,
 ):
-    # print(
-    #    f"[EOS-check] rho_eqState = {rho_eqState}  name={getattr(rho_eqState,'__name__',None)}  module={getattr(rho_eqState,'__module__',None)}",
-    #    flush=True,
-    # )
-    # print(
-    #    f"[EOS-check] p_eqState   = {p_eqState}    name={getattr(p_eqState,'__name__',None)}  module={getattr(p_eqState,'__module__',None)}",
-    #    flush=True,
-    # )
     r_span = (r0, r_max)
 
     y0 = initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu)

@@ -1,5 +1,6 @@
 import os
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import numpy as np
 from Utils.params import M
 
@@ -9,16 +10,20 @@ dpi_val = 600
 
 pos_root_colors = [
     "#1f77b4",
-    "#f4828f",
     "#9305FF",
+    "#f4828f",
     "#1e988a",
+    "#e1de2c",
+    "#0c8a32",
+    "#704809",
+    "#b41f44",
 ]
 
 neg_root_colors = [
-    # "#1f77b4",  # n=0, -ν
-    "#f0a3ab",  # n=0, –ν
+    "#4e91c0",  # n=0, -ν
     "#a185d3",  # n=1, –ν
-    "#5fb4a9",  # n=2, –ν
+    "#f0a3ab",  # n=2, –ν
+    "#5fb4a9",  # n=3, –ν
 ]
 
 
@@ -57,8 +62,8 @@ def _extract_mode_and_sign(entry, nu):
 
 
 def _choose_color(n, vac_sign, nu):
-    if n > 4:
-        return "#1f77b4"
+    if n >= len(pos_root_colors):
+        return "#0a0002"
     palette = neg_root_colors if (nu != 0.0 and vac_sign < 0) else pos_root_colors
     return palette[n % len(palette)]
 
@@ -77,7 +82,7 @@ def _resample_sol_component(sol, idx, r_plot):
     return np.interp(r_plot, sol.t, sol.y[idx])
 
 
-def plotResults_multi(entries, nu, vacuum_sols, savepath):
+def plotResults_multi(entries, xi, m, nu, vacuum_sols, savepath):
     """
     entries: list of dicts with keys
       ['label','sol','r_star','r_mu','mu2']
@@ -110,18 +115,26 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
         label = _signed_label(r"P", n_val, vac_sign, nu)
 
         sty = styles[i % len(styles)]
-        plt.plot(r_plot / 1e3, p_plot, color=color, label=label, **sty)
+        R_s = e["r_star"] * 1e3  # convert km → m to match sol.t units
+        x_norm = r_plot / R_s
+        plt.plot(x_norm, p_plot, color=color, label=label, **sty)
 
-    plt.axvline(
-        x=avg_R_star,
-        color=R_star_color,
-        linestyle="--",
-        alpha=0.75,
-        label="Star radius",
-    )
+    # plt.axvline(
+    #    x=avg_R_star,
+    #    color=R_star_color,
+    #    linestyle="--",
+    #    alpha=0.75,
+    #    label="Star radius",
+    # )
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    plt.xlabel("r [Km]")
-    plt.xlim(left=0)
+    plt.xlabel(r"$r/R_s$")
+    plt.xlim(left=0, right=2)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(MultipleLocator(0.5))
+    ax.xaxis.set_minor_locator(MultipleLocator(0.1))
+    ax.tick_params(direction="in", which="both", top=True, right=True)
+    ax.tick_params(axis="x", which="major", length=4, width=1.2)
+    ax.tick_params(axis="x", which="minor", length=3, width=0.8)
     plt.ylabel("P [Pa]")
     plt.grid(False)
     plt.legend()
@@ -158,18 +171,26 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
         label = _signed_label(r"\mu_{\rm eff}^2", n_val, vac_sign, nu)
 
         sty = styles[i % len(styles)]
-        plt.plot(r_plot, mu2_plot_km, color=color, label=label, **sty)
-    plt.axvline(
-        x=avg_R_star,
-        color=R_star_color,
-        linestyle="--",
-        alpha=0.75,
-        label="Star radius",
-    )
+        R_s = e["r_star"] * 1e3  # convert km → m to match sol.t units
+        x_norm = r_plot / R_s
+        plt.plot(x_norm, mu2_plot_km, color=color, label=label, **sty)
+    # plt.axvline(
+    #    x=avg_R_star,
+    #    color=R_star_color,
+    #    linestyle="--",
+    #    alpha=0.75,
+    #    label="Star radius",
+    # )
     plt.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    plt.xlabel("r [Km]")
+    plt.xlabel(r"$r/R_s$")
     plt.ylabel(r"$\mu_{\rm eff}^2$ [Km$^{-2}$]")
-    plt.xlim(left=0)
+    plt.xlim(left=0, right=2)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(MultipleLocator(0.5))
+    ax.xaxis.set_minor_locator(MultipleLocator(0.1))
+    ax.tick_params(direction="in", which="both", top=True, right=True)
+    ax.tick_params(axis="x", which="major", length=4, width=1.2)
+    ax.tick_params(axis="x", which="minor", length=3, width=0.8)
     plt.title("Effective mass squared")
     plt.grid(False)
     plt.legend()
@@ -189,21 +210,29 @@ def plotResults_multi(entries, nu, vacuum_sols, savepath):
         label = _signed_label(r"\sigma/M_{Pl}", n_val, vac_sign, nu)
 
         sty = styles[i % len(styles)]
-        plt.plot(r_plot / 1e3, sigma_plot / M, color=color, label=label, **sty)
+        R_s = e["r_star"] * 1e3  # convert km → m to match sol.t units
+        x_norm = r_plot / R_s
+        plt.plot(x_norm, sigma_plot / M, color=color, label=label, **sty)
 
     nu_line(nu, vacuum_sols)
-    plt.axvline(
-        x=avg_R_star,
-        color=R_star_color,
-        linestyle="--",
-        alpha=0.75,
-        label="Star radius",
-    )
-    plt.xlabel("r [Km]")
-    plt.xlim(left=0)
+    # plt.axvline(
+    #    x=avg_R_star,
+    #    color=R_star_color,
+    #    linestyle="--",
+    #    alpha=0.75,
+    #    label="Star radius",
+    # )
+    plt.xlabel(r"$r/R_s$")
+    plt.xlim(left=0, right=2)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(MultipleLocator(0.5))
+    ax.xaxis.set_minor_locator(MultipleLocator(0.1))
+    ax.tick_params(direction="in", which="both", top=True, right=True)
+    ax.tick_params(axis="x", which="major", length=4, width=1.2)
+    ax.tick_params(axis="x", which="minor", length=3, width=0.8)
     plt.legend()
     plt.grid(False)
-    plt.title("Scalar field")
+    plt.title(rf"$\xi={float(xi):g}$, $\mu={float(m):g}$, $v={float(nu):g}$")
     plt.tight_layout()
     plt.savefig(savepath + "sigma.png", dpi=dpi_val)
     # plt.show()

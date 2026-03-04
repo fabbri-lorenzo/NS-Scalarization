@@ -408,9 +408,9 @@ def diagnostic_scan(
         raise ValueError("n_refine must be >= 3")
 
     # --- 1) coarse scan ---
-    S1 = np.geomspace(a, min(b, 1e-2 * M), n_coarse // 2)
-    S2 = np.linspace(min(b, 1e-2 * M), b, n_coarse - len(S1))
-    S_coarse = np.unique(np.concatenate([S1, S2]))
+    S1 = np.geomspace(a, min(b, 1e-2 * M), n_coarse // 2, endpoint=False)
+    S2 = np.linspace(min(b, 1e-2 * M), b, n_coarse - (n_coarse // 2))
+    S_coarse = np.concatenate([S1, S2])
     F_coarse = _eval_sigma_residuals_on_grid(
         S_coarse,
         r0,
