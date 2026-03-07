@@ -32,19 +32,15 @@ def _p_from_lambda(lmbda, M=M_CONST):
     return float(-np.log(lmbda) / np.log(M))
 
 
-def _lambda_tick_formatter(M=M_CONST, decimals=1):
-    def _fmt(x, _pos):
-        if x == 0:
-            return "0"
-        p = _p_from_lambda(x, M=M)
-        if p is None:
-            return ""
-        p = round(p, decimals)
-        if abs(p) < 10 ** (-decimals):
-            p = 0.0
-        return r"$1/M_{Pl}^{%.*f}$" % (decimals, p)
-
-    return FuncFormatter(_fmt)
+def decade_label(val: float, *, symbol=r"\lambda"):
+    """Return latex label like λ=0 or λ=10^{exp} for decade-ish values."""
+    val = float(val)
+    if val == 0.0:
+        return rf"${symbol}=0$"
+    if not np.isfinite(val) or val <= 0:
+        return rf"${symbol}=?$"
+    exp = int(np.round(np.log10(val)))
+    return rf"${symbol}=10^{{{exp}}}$"
 
 
 def signed_sci10_even_only(y, _pos=None):
@@ -65,7 +61,7 @@ def signed_sci10_even_only(y, _pos=None):
         return ""
 
     # label only even exponents
-    if e % 4 != 0:
+    if e % 2 != 0:
         return ""
 
     return rf"${sign}10^{{{e}}}$"
@@ -204,10 +200,10 @@ def _plot_with_gaps(ax, x, y, *, max_dx, **plot_kw):
 def plot_scan_results(
     *,
     base_dir="Results/scan",
-    scan="lambda_scan",  # "lambda_scan" or "xi_scan"
+    scan=None,
     xi=None,
     lmbda=None,  # float or list of floats for xi_scan
-    mu=0.0,
+    mu=None,
     nu=0.0,
     stars=("L", "H"),
     include_modes=None,  # e.g. (0,1,2)
@@ -216,7 +212,7 @@ def plot_scan_results(
     figsize=(7.4, 4.4),
     dpi=300,
     out_path=None,
-    natural_units=True,
+    EMG_region=False,
     connect_points=True,
     markers=False,
     lw=1.6,
@@ -228,34 +224,50 @@ def plot_scan_results(
 ):
     """
     High-level dispatcher for paper figures from sz_scan.py CSVs.
-
-    - scan="lambda_scan": Q/M vs lambda at fixed xi
-    - scan="xi_scan":     Q/M vs xi at fixed lambda (supports multiple lambdas)
-
-    Overlays Light (L) and Heavy (H) on the same axes.
-    Uses a signed "log-like" y-axis (symlog) with:
-      - y minor ticks every decade (tick marks only)
-      - y major ticks every 2 decades (labeled)
-    For x-axis:
-      - ticks at every scanned point
-      - labels every 2 points
     """
     df = _load_csvs(base_dir)
 
     # --- filter by scan type via filenames (avoid mixing xi_scan and lambda_scan) ---
     scan_norm = str(scan).strip().lower()
+
     if scan_norm in ("lambda_scan", "lmbda_scan", "lambda"):
         df = df[
             df["source_file"]
             .astype(str)
-            .str.contains("lmbda_scan|lambda_scan", regex=True, na=False)
+            .str.contains(r"\blmbda_scan\b|\blambda_scan\b", regex=True, na=False)
         ]
-    elif scan_norm in ("xi_scan", "xi"):
+        scan_kind = "lambda_scan"
+
+    elif scan_norm in ("mu_scan", "mu"):
         df = df[
-            df["source_file"].astype(str).str.contains("xi_scan", regex=True, na=False)
+            df["source_file"]
+            .astype(str)
+            .str.contains(r"\bmu_scan\b", regex=True, na=False)
         ]
+        scan_kind = "mu_scan"
+
+    elif scan_norm in ("xi_scan_lambda", "xi_lambda"):
+        # your old naming convention, if you have it
+        df = df[
+            df["source_file"]
+            .astype(str)
+            .str.contains(r"xi_scan_lmbda=", regex=True, na=False)
+        ]
+        scan_kind = "xi_scan_lambda"
+
+    elif scan_norm in ("xi_scan_mu", "xi_mu", "xi@mu", "xi_by_mu"):
+        # THIS is your current naming convention
+        df = df[
+            df["source_file"]
+            .astype(str)
+            .str.contains(r"xi_scan_mu=", regex=True, na=False)
+        ]
+        scan_kind = "xi_scan_mu"
+
     else:
-        raise ValueError("scan must be 'lambda_scan' or 'xi_scan'.")
+        raise ValueError(
+            "scan must be 'lambda_scan', 'xi_scan_lambda', 'xi_scan_mu', or 'mu_scan'."
+        )
 
     required = {
         "xi",
@@ -287,33 +299,72 @@ def plot_scan_results(
         pd.to_numeric(df["nu"], errors="coerce"), float(nu), atol=1e-15, rtol=0.0
     )
     # mu filter
-    m &= np.isclose(
-        pd.to_numeric(df["mu"], errors="coerce"), float(mu), atol=1e-15, rtol=0.0
-    )
+    if mu is not None and scan_kind not in ("xi_scan_mu",):
+        m &= np.isclose(
+            pd.to_numeric(df["mu"], errors="coerce"), float(mu), atol=1e-15, rtol=0.0
+        )
 
     # star filter
     stars = tuple(str(s) for s in stars)
     m &= df["rho0_tag"].astype(str).isin(stars)
 
     # ---- scan selection + x axis choice ----
-    if scan_norm in ("lambda_scan", "lmbda_scan", "lambda"):
+    if scan_kind == "lambda_scan":
         if xi is None:
             raise ValueError("scan='lambda_scan' requires xi=...")
+        if mu is None:
+            raise ValueError(
+                "scan='lambda_scan' requires mu=... (fixed mu for this scan)"
+            )
         m &= np.isclose(
             pd.to_numeric(df["xi"], errors="coerce"), float(xi), atol=xi_tol, rtol=0.0
+        )
+        m &= np.isclose(
+            pd.to_numeric(df["mu"], errors="coerce"), float(mu), atol=1e-15, rtol=0.0
         )
 
         xcol = "lambda"
         xlabel = r"$\lambda$"
         title = rf"$\xi={float(xi):g}$, $\mu={float(mu):g}$, $v={float(nu):g}$"
-        lmbda_list = [None]  # not used here
+        slice_col = None
+        slice_list = [None]
 
-    else:
-        # xi_scan
+    elif scan_kind == "mu_scan":
+        # Q/M vs mu at fixed xi and lambda
+        if xi is None:
+            raise ValueError("scan='mu_scan' requires xi=...")
         if lmbda is None:
-            raise ValueError("scan='xi_scan' requires lmbda=... (float or list)")
+            raise ValueError("scan='mu_scan' requires lmbda=... (fixed lambda)")
+        m &= np.isclose(
+            pd.to_numeric(df["xi"], errors="coerce"), float(xi), atol=xi_tol, rtol=0.0
+        )
 
-        lmbda_list = (
+        lam_col = pd.to_numeric(df["lambda"], errors="coerce").to_numpy(dtype=float)
+        lam_sel = float(lmbda)
+        if lam_sel == 0.0:
+            m &= lam_col == 0.0
+        else:
+            m &= np.isclose(lam_col, lam_sel, rtol=1e-6, atol=0.0)
+
+        xcol = "mu"
+        xlabel = r"$\mu$"
+        title = rf"$\xi={float(xi):g}$, $\lambda={float(lmbda):g}$, $v={float(nu):g}$"
+        slice_col = None
+        slice_list = [None]
+
+    elif scan_kind == "xi_scan_lambda":
+        # Q/M vs xi at fixed mu and (possibly multiple) lambda values
+        if mu is None:
+            raise ValueError("scan='xi_scan_lambda' requires mu=... (fixed mu)")
+        if lmbda is None:
+            raise ValueError("scan='xi_scan_lambda' requires lmbda=... (float or list)")
+
+        m &= np.isclose(
+            pd.to_numeric(df["mu"], errors="coerce"), float(mu), atol=1e-15, rtol=0.0
+        )
+
+        slice_col = "lambda"
+        slice_list = (
             list(lmbda)
             if isinstance(lmbda, (list, tuple, np.ndarray))
             else [float(lmbda)]
@@ -322,6 +373,32 @@ def plot_scan_results(
         xcol = "xi"
         xlabel = r"$\xi$"
         title = rf"$\mu={float(mu):g}$, $v={float(nu):g}$"
+
+    elif scan_kind == "xi_scan_mu":
+        # Q/M vs xi at fixed lambda and (possibly multiple) mu values
+        if lmbda is None:
+            raise ValueError("scan='xi_scan_mu' requires lmbda=... (fixed lambda)")
+        if mu is None:
+            raise ValueError(
+                "scan='xi_scan_mu' requires mu=... (float or list of mu values)"
+            )
+
+        # enforce fixed lambda
+        lam_col = pd.to_numeric(df["lambda"], errors="coerce").to_numpy(dtype=float)
+        lam_sel = float(lmbda)
+        if lam_sel == 0.0:
+            m &= lam_col == 0.0
+        else:
+            m &= np.isclose(lam_col, lam_sel, rtol=1e-6, atol=0.0)
+
+        slice_col = "mu"
+        slice_list = (
+            list(mu) if isinstance(mu, (list, tuple, np.ndarray)) else [float(mu)]
+        )
+
+        xcol = "xi"
+        xlabel = r"$\xi$"
+        title = rf"$\lambda={float(lmbda):g}$, $v={float(nu):g}$"
 
     # ---- figure ----
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi, constrained_layout=True)
@@ -344,47 +421,25 @@ def plot_scan_results(
     xs_plotted = []
     modes_plotted = set()
 
-    # ----- Lambda legend handles (xi_scan only) -----
-    lambda_handles = []
-    if xcol == "xi":
-
-        def _lam_label(lam, i):
-            lam = float(lam)
-            if lam == 0.0:
-                return rf"$\lambda = 0$"
-            exp = int(np.floor(np.log10(abs(lam))))
-            return rf"$\lambda = 10^{{{exp}}}$"
-
-        for i, L in enumerate(lmbda_list):
-            lambda_handles.append(
-                mlines.Line2D([], [], color="none", label=_lam_label(L, i))
-            )
-            i += 1
-
+    # ---- plot per slice (lambda OR mu) ----
     any_plotted = False
 
-    # ---- plot per lambda slice (xi_scan can have multiple) ----
-    for lmbda_sel in lmbda_list:
-        if xcol == "xi":
-            lam_col = pd.to_numeric(df["lambda"], errors="coerce").to_numpy(dtype=float)
-            lam_sel = float(lmbda_sel)
-
-            if lam_sel == 0.0:
-                m_local = m & (lam_col == 0.0)
-            else:
-                # relative match for tiny numbers; absolute tol must be 0 here
-                m_local = m & np.isclose(lam_col, lam_sel, rtol=1e-6, atol=0.0)
-
-            d = df[m_local].copy()
-        else:
+    for slice_val in slice_list:
+        if slice_col is None:
             d = df[m].copy()
+        else:
+            col = pd.to_numeric(df[slice_col], errors="coerce").to_numpy(dtype=float)
+            sel = float(slice_val)
+            if sel == 0.0:
+                m_local = m & (col == 0.0)
+            else:
+                m_local = m & np.isclose(col, sel, rtol=1e-6, atol=0.0)
+            d = df[m_local].copy()
 
         if d.empty:
             continue
 
-        # keep only rows with valid Q/M
         d = d[np.isfinite(d["Q_over_M"])]
-
         d["mode_n"] = pd.to_numeric(d["mode_n"], errors="coerce")
         d = d.dropna(subset=["mode_n", xcol, "Q_over_M"])
         d["mode_n"] = d["mode_n"].astype(int)
@@ -392,11 +447,9 @@ def plot_scan_results(
         if include_modes is not None:
             include_modes_set = set(int(n) for n in include_modes)
             d = d[d["mode_n"].isin(include_modes_set)]
-
         if d.empty:
             continue
 
-        # deduplicate: median per (star, mode, x)
         d[xcol] = pd.to_numeric(d[xcol], errors="coerce")
         d = (
             d.groupby(["rho0_tag", "mode_n", xcol], as_index=False)["Q_over_M"]
@@ -404,18 +457,13 @@ def plot_scan_results(
             .sort_values(["rho0_tag", "mode_n", xcol])
         )
 
-        # draw curves
         for star in stars:
             for n in sorted(d["mode_n"].unique()):
                 dn = d[(d["rho0_tag"] == star) & (d["mode_n"] == n)].sort_values(xcol)
                 if dn.empty:
                     continue
 
-                if xcol == "lambda":
-                    x = dn["lambda"].to_numpy(dtype=float)
-                else:
-                    x = dn["xi"].to_numpy(dtype=float)
-
+                x = dn[xcol].to_numpy(dtype=float)
                 y = dn["Q_over_M"].to_numpy(dtype=float)
                 mask = np.isfinite(x) & np.isfinite(y)
                 if not np.any(mask):
@@ -451,9 +499,18 @@ def plot_scan_results(
     # bounds
     ax.axhline(6e-4, color="gray", linestyle="--", linewidth=1.0)
     ax.axhline(-6e-4, color="gray", linestyle="--", linewidth=1.0)
+    x_min, x_max = ax.get_xlim()
+    ax.text(
+        x_max * 0.5,
+        6e-4 * 1.1,
+        "PSR J1738+0333",
+        fontsize=10,
+        color="gray",
+        zorder=5,
+    )
 
     # ---------------- X axis formatting: ticks at every point, labels every 2 ----------------
-    if xcol == "lambda":
+    if xcol in ("lambda", "mu"):
         # Use real lambda values on a symlog x-axis (to allow lambda=0)
         lam_all = np.concatenate([xx[np.isfinite(xx)] for xx in xs_plotted if xx.size])
         lam_pos = lam_all[lam_all > 0.0]
@@ -533,27 +590,32 @@ def plot_scan_results(
         ax.xaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(axis="x", which="minor", length=3)
 
-        # --- EMG shaded region ---
-        xi_emg_min = 0.0
-        xi_emg_max = 0.63
+        if EMG_region:
+            # --- EMG shaded region ---
+            xi_emg_min = 0.0
+            xi_emg_max = 0.63
 
-        ax.axvspan(
-            xi_emg_min, xi_emg_max, color="#3274e6", alpha=0.5, zorder=0  # soft blue
-        )
+            ax.axvspan(
+                xi_emg_min,
+                xi_emg_max,
+                color="#3274e6",
+                alpha=0.5,
+                zorder=0,  # soft blue
+            )
 
-        # EMG label centered in region
-        x_center = 0.5 * (xi_emg_min + xi_emg_max)
-        ymin, ymax = ax.get_ylim()
-        y_center = 0.5 * ymax
+            # EMG label centered in region
+            x_center = 0.5 * (xi_emg_min + xi_emg_max)
+            ymin, ymax = ax.get_ylim()
+            y_center = 0.5 * ymax
 
-        ax.text(
-            -1.1,
-            1e-1,
-            r"$\mathrm{EMG}$",
-            fontsize=10,
-            color="#3274e6",
-            zorder=5,
-        )
+            ax.text(
+                -1.1,
+                1e-1,
+                r"$\mathrm{EMG}$",
+                fontsize=10,
+                color="#3274e6",
+                zorder=5,
+            )
 
     # ---------------- Y axis formatting: symlog + symmetric + minor every decade ----------------
     if not ys_plotted:
@@ -577,10 +639,18 @@ def plot_scan_results(
         )
     )
 
-    y_abs_max = float(np.max(yabs))
+    y_all = np.concatenate([yy[np.isfinite(yy)] for yy in ys_plotted if yy.size])
+
+    y_abs_max = float(np.max(np.abs(y_all)))
     pad_factor = 1e3 ** float(y_pad_decades)
     ylim = y_abs_max * pad_factor
-    ax.set_ylim(-ylim, +ylim)  # symmetric: avoids “disappearing branch”
+
+    if np.any(y_all < 0):
+        # keep symmetric axis
+        ax.set_ylim(-ylim, +ylim)
+    else:
+        # only positive data
+        ax.set_ylim(0.0, ylim)
 
     # Build decade ticks
     e_max = int(np.ceil(np.log10(ylim))) if ylim > 0 else 0
@@ -654,6 +724,25 @@ def plot_scan_results(
         frameon=True,
     )
     ax.add_artist(leg_mode)
+
+    # Slice legend (only when we overlay multiple slices at x=xi)
+    if slice_col in ("lambda", "mu") and len(slice_list) > 1:
+        sym = r"\lambda" if slice_col == "lambda" else r"\mu"
+        slice_labels = [decade_label(v, symbol=sym) for v in slice_list]
+        slice_handles = [
+            mlines.Line2D([], [], color="none", label=lab) for lab in slice_labels
+        ]
+        leg_slice = ax.legend(
+            handles=slice_handles,
+            loc="lower right",
+            bbox_to_anchor=(1, 0.30),
+            frameon=True,
+            handlelength=0.0,
+            handletextpad=0.2,
+            borderpad=0.6,
+            labelspacing=0.4,
+        )
+        ax.add_artist(leg_slice)
 
     # Lambda legend (xi_scan only) — no handle column => no white space
     # if lambda_handles:

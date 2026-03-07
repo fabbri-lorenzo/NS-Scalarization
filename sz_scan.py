@@ -68,9 +68,13 @@ def _run_single_point(
     p["xi"] = xi_val
     p["lmbda"] = lmbda_val
     p["nu"] = nu_val
-    p["mu"] = m_val
+    p["m"] = m_val
     # Update shooting targets and method accordingly
-    p["target_shooting"] = [0.0] if nu_val == 0.0 else [abs(nu_val), -abs(nu_val)]
+    p["target_shooting"] = [0.0]
+    if (lmbda_val != 0.0) and (nu_val**2 > m_val**2 / lmbda_val):
+        sigma_min = np.sqrt(nu_val**2 - m_val**2 / lmbda_val)
+        p["target_shooting"] = [abs(sigma_min), -abs(sigma_min)]
+
     # Determine method heuristically: replicate sz_single logic
     p["method"] = "BDF"
     result = solve_model(p, rho0)
@@ -192,49 +196,111 @@ def _resolve_stars(selection: str | Iterable[str]) -> List[Tuple[float, str]]:
     return stars
 
 
-def _resolve_scans(selection: str | Iterable[str]) -> Tuple[bool, bool]:
-    """Resolve scan selection into (do_xi, do_lambda)."""
+def _resolve_scans(selection: str | Iterable[str]) -> Tuple[bool, bool, bool]:
+    """Resolve scan selection into (do_xi, do_lambda, do_mu)."""
 
     def _norm_key(item: str) -> str:
-        return item.strip().lower()
+        return item.strip().lower().replace(" ", "")
+
+    # accepted aliases per scan
+    XI_KEYS = {"xi"}
+    LAMBDA_KEYS = {"lambda", "lmbda"}
+    MU_KEYS = {"mu", "mass", "baremass", "scalarmass"}
+
+    # accepted "all/both" combos
+    ALL_KEYS = {
+        "all",
+        "everything",
+        "xi+lambda+mu",
+        "xi+mu+lambda",
+        "lambda+xi+mu",
+        "lambda+mu+xi",
+        "mu+xi+lambda",
+        "mu+lambda+xi",
+    }
+
+    # 2-way combos (kept for backward compatibility)
+    XI_LAMBDA_KEYS = {
+        "both",
+        "xi+lambda",
+        "lambda+xi",
+        "xi,lambda",
+        "lambda,xi",
+        "xi,lmbda",
+        "lmbda,xi",
+    }
+    XI_MU_KEYS = {"xi+mu", "mu+xi", "xi,mu", "mu,xi"}
+    LAMBDA_MU_KEYS = {
+        "lambda+mu",
+        "mu+lambda",
+        "lambda,mu",
+        "mu,lambda",
+        "lmbda+mu",
+        "mu+lmbda",
+        "lmbda,mu",
+        "mu,lmbda",
+    }
 
     if isinstance(selection, str):
         key = _norm_key(selection)
-        if key in {
-            "both",
-            "all",
-            "xi+lambda",
-            "lambda+xi",
-            "xi,lambda",
-            "lambda,xi",
-            "xi,lmbda",
-            "lmbda,xi",
-        }:
-            return True, True
-        if key in {"xi"}:
-            return True, False
-        if key in {"lambda", "lmbda"}:
-            return False, True
-        raise ValueError("scans must be 'xi', 'lambda', 'both' or an iterable of those")
+
+        # full set
+        if key in ALL_KEYS:
+            return True, True, True
+
+        # two-way combos
+        if key in XI_LAMBDA_KEYS:
+            return True, True, False
+        if key in XI_MU_KEYS:
+            return True, False, True
+        if key in LAMBDA_MU_KEYS:
+            return False, True, True
+
+        # single
+        if key in XI_KEYS:
+            return True, False, False
+        if key in LAMBDA_KEYS:
+            return False, True, False
+        if key in MU_KEYS:
+            return False, False, True
+
+        raise ValueError(
+            "scans must be 'xi', 'lambda', 'mu', 'all' (or combos like 'xi+lambda', 'xi+mu', 'lambda+mu') "
+            "or an iterable of those"
+        )
 
     do_xi = False
     do_lambda = False
+    do_mu = False
+
     for item in selection:
         if not isinstance(item, str):
             raise TypeError("scans iterable must contain strings")
         key = _norm_key(item)
-        if key in {"xi"}:
+
+        if key in XI_KEYS:
             do_xi = True
-        elif key in {"lambda", "lmbda"}:
+        elif key in LAMBDA_KEYS:
             do_lambda = True
-        elif key in {"both", "all"}:
+        elif key in MU_KEYS:
+            do_mu = True
+        elif key in {"both"}:
+            # keep old meaning: xi + lambda
             do_xi = True
             do_lambda = True
+        elif key in {"all", "everything"}:
+            do_xi = True
+            do_lambda = True
+            do_mu = True
         else:
-            raise ValueError("scans iterable must contain 'xi', 'lambda', or 'both'")
-    if not (do_xi or do_lambda):
+            raise ValueError(
+                "scans iterable must contain 'xi', 'lambda', 'mu', 'both', or 'all'"
+            )
+
+    if not (do_xi or do_lambda or do_mu):
         raise ValueError("scans selection produced no targets")
-    return do_xi, do_lambda
+
+    return do_xi, do_lambda, do_mu
 
 
 def run_scan(
@@ -245,7 +311,7 @@ def run_scan(
 
     Args:
         stars: "light", "heavy", "both" or an iterable of those.
-        scans: "xi", "lambda", "both" or an iterable of those.
+        scans: "xi", "lambda", "mu", "both" or an iterable of those.
     """
     # ----- define the scan ranges -----
     # ξ scan: set the range and step here
@@ -270,12 +336,31 @@ def run_scan(
         1e-52,
         1e-50,
     ]
+    mu_scan = [
+        0.0,
+        1e-20,
+        1e-19,
+        1e-18,
+        1e-17,
+        1e-16,
+        1e-15,
+        1e-14,
+        1e-13,
+        1e-12,
+        1e-11,
+        1e-10,
+        1e-9,
+        1e-8,
+        1e-7,
+        1e-6,
+        1e-5,
+    ]
     # fixed values for the other parameter during each scan
-    xi_fixed_for_lambda_scan = 100
-    lmbda_fixed_for_xi_scan = 1e-105
+    xi_fixed = 10
+    lmbda_fixed_for_xi_scan = 0.0
+    mu_fixed_for_xi_scan = 1e-10
     # physical constants
     nu_val = 0.0
-    m_val = 0.0
 
     # base parameter template (common to all scan points)
     params_template: Dict[str, Any] = {
@@ -283,8 +368,8 @@ def run_scan(
         "rho_eqState": rho_SLy4,
         "frac_pc": 1e-10,
         # The following will be overridden per point
-        "xi": xi_fixed_for_lambda_scan,
-        "mu": m_val,
+        "xi": xi_fixed,
+        "mu": mu_fixed_for_xi_scan,
         "lmbda": lmbda_fixed_for_xi_scan,
         "nu": nu_val,
         "method": "RK45",
@@ -298,21 +383,23 @@ def run_scan(
 
     # List of stars to scan
     stars_to_scan = _resolve_stars(stars)
-    do_xi_scan, do_lambda_scan = _resolve_scans(scans)
+    do_xi_scan, do_lambda_scan, do_mu_scan = _resolve_scans(scans)
 
-    # ---- ξ scan at fixed λ ----
+    # ---- ξ scan at fixed λ, mu ----
     if do_xi_scan:
         xi_values = list(np.arange(xi_min, xi_max + xi_step * 0.5, xi_step))
         lmbda_val = lmbda_fixed_for_xi_scan
+        m_val = mu_fixed_for_xi_scan
         for rho0, tag in stars_to_scan:
             custom_print(
-                f"\nPerforming ξ–scan for star {tag}: λ={lmbda_val:.2e}, ν={nu_val:.2e}",
+                f"\nPerforming ξ–scan for star {tag}: µ={m_val:.2e}, λ={lmbda_val:.2e}, ν={nu_val:.2e}",
                 style="bold",
             )
             out_dir = os.path.join("Results", "scan", tag)
             os.makedirs(out_dir, exist_ok=True)
             csv_path = os.path.join(
-                out_dir, f"xi_scan_lmbda={lmbda_val:.0e}_nu={nu_val:.0e}.csv"
+                out_dir,
+                f"xi_scan_mu={m_val:.0e}_lmbda={lmbda_val:.0e}_nu={nu_val:.0e}.csv",
             )
             with open(csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
@@ -379,7 +466,7 @@ def run_scan(
 
     # ---- λ scan at fixed ξ ----
     if do_lambda_scan:
-        xi_val = xi_fixed_for_lambda_scan
+        xi_val = xi_fixed
         for rho0, tag in stars_to_scan:
             custom_print(
                 f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
@@ -449,6 +536,86 @@ def run_scan(
                 f"Completed λ–scan for star {tag}. CSV saved to {csv_path}",
                 style="dim",
             )
+    # ---- μ scan at fixed ξ and λ ----
+    if do_mu_scan:
+        xi_val = xi_fixed
+        lam_val = (
+            lmbda_fixed_for_xi_scan  # or define lmbda_fixed_for_mu_scan explicitly
+        )
+        for rho0, tag in stars_to_scan:
+            custom_print(
+                f"\nPerforming μ–scan for star {tag}: ξ={xi_val:.2e}, λ={lam_val:.2e}, ν={nu_val:.2e}",
+                style="bold",
+            )
+            out_dir = os.path.join("Results", "scan", tag)
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(
+                out_dir,
+                f"mu_scan_xi={xi_val:.0e}_lmbda={lam_val:.0e}_nu={nu_val:.0e}.csv",
+            )
+
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "xi",
+                        "mu",
+                        "lambda",
+                        "nu",
+                        "rho0_tag",
+                        "scalarized",
+                        "mode_n",
+                        "vacuum_sign",
+                        "sigma0_over_M",
+                        "ADM_over_Msun",
+                        "Q_over_Msun",
+                        "Q_over_ADM",
+                        "R_star_km",
+                    ]
+                )
+
+                with ProcessPoolExecutor(max_workers=4) as ex:
+                    futures = {}
+                    for mu_val in mu_scan:
+                        fut = ex.submit(
+                            _run_single_point,
+                            params_template,
+                            rho0,
+                            xi_val,
+                            lam_val,
+                            nu_val,
+                            mu_val,
+                        )
+                        futures[fut] = mu_val
+
+                    iterator = as_completed(futures)
+                    if tqdm is not None:
+                        iterator = tqdm(
+                            iterator,
+                            total=len(futures),
+                            desc=f"μ-scan {tag}",
+                            unit="pt",
+                        )
+
+                    for fut in iterator:
+                        mu_hint = futures[fut]
+                        try:
+                            xi_ret, l_ret, result = fut.result()
+                            _write_scan_row(
+                                writer, xi_ret, mu_hint, l_ret, nu_val, tag, result
+                            )
+                        except Exception as e:
+                            if tqdm is not None:
+                                tqdm.write(f"[μ={mu_hint}] error: {e}")
+                            else:
+                                custom_print(f"[μ={mu_hint}] error: {e}", color="red")
+                            _write_scan_row(
+                                writer, xi_val, mu_hint, lam_val, nu_val, tag, None
+                            )
+
+            custom_print(
+                f"Completed μ–scan for star {tag}. CSV saved to {csv_path}", style="dim"
+            )
 
 
 if __name__ == "__main__":
@@ -458,20 +625,20 @@ if __name__ == "__main__":
         xi=100,
         mu=0.0,
         nu=0.0,
-        base_dir="Results_final/scan",
+        base_dir="Results_final/EMG/scan",
         include_modes=(0, 1, 2),
         markers=False,
         dpi=600,
         out_path="Results/QM_vs_lambda_xi100.pdf",
     )
-    plot_scan_results(
-        scan="xi_scan",
-        lmbda=(1e-105, 1e-60),
-        mu=0.0,
-        nu=0.0,
-        base_dir="Results_final/scan",
-        include_modes=(0, 1, 2),
-        markers=False,
-        dpi=600,
-        out_path="Results/QM_vs_xi.pdf",
-    )
+    # plot_scan_results(
+    #    scan="xi_scan_mu",
+    #    lmbda=0.0,
+    #    mu=(1e-20, 1e-15),
+    #    nu=0.0,
+    #    base_dir="Results_final/ULA/scan",
+    #    include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    #    markers=False,
+    #    dpi=600,
+    #    out_path="Results/QM_vs_xi.pdf",
+    # )
