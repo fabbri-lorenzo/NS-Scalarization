@@ -33,6 +33,7 @@ def _sigma2_psi2(sigma0, p0, eps0, xi, m2, lmbda, nu):
     return sigma2, Psi2
 
 def initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu):
+    """Second-order central expansion for pressure/metric/scalar at r0."""
     # --- central thermodynamics ---
     p0   = float(p_eqState(rho0))
     eps0 = float(rho0 * c * c)
@@ -88,18 +89,8 @@ def make_tov(
     mu2_recorder=None,
 ):
     """
-    Create the TOV system of ODEs with cutoff-based guards to stop the solver
-    before values become non-finite or numerically unstable.
-
-    Parameters
-    ----------
-    SAFE_CUTOFF : float
-        If |x| > SAFE_CUTOFF for critical quantities, return NaNs.
-        (Use smaller values like 1e100 or 1e50 for earlier stopping.)
-    DENOM_FLOOR : float
-        Minimum allowed absolute denominator.
-    MAX_EXP_ARG : float
-        Maximum exponent allowed in exp(2*Psi) to avoid overflow.
+    Build the TOV+scalar system dy/dr for solve_ivp, adding guards that end
+    integration before numerical blow-ups and optionally recording μ_eff².
     """
 
     def tov_system(r, y):

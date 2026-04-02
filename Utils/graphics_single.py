@@ -1,3 +1,5 @@
+"""Plotting helpers for single-star solutions."""
+
 import os
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
@@ -8,23 +10,12 @@ from Utils.params import M
 R_star_color = 'c'
 dpi_val = 600
 
-pos_root_colors = [
-    "#1f77b4",
-    "#9305FF",
-    "#f4828f",
-    "#1e988a",
-    "#e1de2c",
-    "#0c8a32",
-    "#704809",
-    "#b41f44",
+pos_root_styles = [
+    "-",
+    "--",
 ]
 
-neg_root_colors = [
-    "#4e91c0",  # n=0, -ν
-    "#a185d3",  # n=1, –ν
-    "#f0a3ab",  # n=2, –ν
-    "#5fb4a9",  # n=3, –ν
-]
+neg_root_styles = [":", "-."]
 
 
 def nu_line(nu, vacuum_sols):
@@ -61,10 +52,8 @@ def _extract_mode_and_sign(entry, nu):
     return n, vac_sign
 
 
-def _choose_color(n, vac_sign, nu):
-    if n >= len(pos_root_colors):
-        return "#0a0002"
-    palette = neg_root_colors if (nu != 0.0 and vac_sign < 0) else pos_root_colors
+def _choose_style(n, vac_sign, nu):
+    palette = neg_root_styles if (nu != 0.0 and vac_sign < 0) else pos_root_styles
     return palette[n % len(palette)]
 
 
@@ -83,11 +72,7 @@ def _resample_sol_component(sol, idx, r_plot):
 
 
 def plotResults_multi(entries, xi, m, nu, vacuum_sols, savepath):
-    """
-    entries: list of dicts with keys
-      ['label','sol','r_star','r_mu','mu2']
-    Makes one figure per quantity, overlaying curves for each entry.
-    """
+    """Render pressure, μ_eff² and σ overlays for one star and many modes."""
     os.makedirs(savepath, exist_ok=True)
 
     # style cycle (extend if you add more modes)
@@ -111,13 +96,12 @@ def plotResults_multi(entries, xi, m, nu, vacuum_sols, savepath):
         p_plot = _resample_sol_component(sol, idx=0, r_plot=r_plot)
 
         n_val, vac_sign = _extract_mode_and_sign(e, nu)
-        color = _choose_color(n_val, vac_sign, nu)
         label = _signed_label(r"P", n_val, vac_sign, nu)
 
-        sty = styles[i % len(styles)]
+        sty = _choose_style(n_val, vac_sign, nu)
         R_s = e["r_star"] * 1e3  # convert km → m to match sol.t units
         x_norm = r_plot / R_s
-        plt.plot(x_norm, p_plot, color=color, label=label, **sty)
+        plt.plot(x_norm, p_plot, label=label, linestyle=sty, linewidth=1.6)
 
     # plt.axvline(
     #    x=avg_R_star,
@@ -167,13 +151,12 @@ def plotResults_multi(entries, xi, m, nu, vacuum_sols, savepath):
         mu2_plot_km = np.interp(r_plot, r_mu_km, mu2_m) * 1e6  # m^-2 -> Km^-2
 
         n_val, vac_sign = _extract_mode_and_sign(e, nu)
-        color = _choose_color(n_val, vac_sign, nu)
         label = _signed_label(r"\mu_{\rm eff}^2", n_val, vac_sign, nu)
 
-        sty = styles[i % len(styles)]
+        sty = _choose_style(n_val, vac_sign, nu)
         R_s = e["r_star"] * 1e3  # convert km → m to match sol.t units
         x_norm = r_plot / R_s
-        plt.plot(x_norm, mu2_plot_km, color=color, label=label, **sty)
+        plt.plot(x_norm, mu2_plot_km, label=label, linestyle=sty, linewidth=1.6)
     # plt.axvline(
     #    x=avg_R_star,
     #    color=R_star_color,
@@ -206,13 +189,12 @@ def plotResults_multi(entries, xi, m, nu, vacuum_sols, savepath):
         sigma_plot = _resample_sol_component(sol, idx=2, r_plot=r_plot)  # σ(r)
 
         n_val, vac_sign = _extract_mode_and_sign(e, nu)
-        color = _choose_color(n_val, vac_sign, nu)
         label = _signed_label(r"\sigma/M_{Pl}", n_val, vac_sign, nu)
 
-        sty = styles[i % len(styles)]
+        sty = _choose_style(n_val, vac_sign, nu)
         R_s = e["r_star"] * 1e3  # convert km → m to match sol.t units
         x_norm = r_plot / R_s
-        plt.plot(x_norm, sigma_plot / M, color=color, label=label, **sty)
+        plt.plot(x_norm, sigma_plot / M, label=label, linestyle=sty, linewidth=1.6)
 
     nu_line(nu, vacuum_sols)
     # plt.axvline(
@@ -235,45 +217,6 @@ def plotResults_multi(entries, xi, m, nu, vacuum_sols, savepath):
     plt.title(rf"$\xi={float(xi):g}$, $\mu={float(m):g}$, $v={float(nu):g}$")
     plt.tight_layout()
     plt.savefig(savepath + "sigma.png", dpi=dpi_val)
-    # plt.show()
-
-    ## --- Normalized scalar field ---
-    # plt.figure()
-    # for i, e in enumerate(entries):
-    #    sol = e["sol"]; sty = styles[i % len(styles)]
-    #    sigma0 = sol.y[2,0]
-    #    r_plot = np.linspace(sol.t[0], sol.t[-1], 4000)
-    #    if hasattr(sol, "sol") and callable(sol.sol):
-    #        sigma_plot = sol.sol(r_plot)[3]
-    #    else:
-    #        sigma_plot = np.interp(r_plot, sol.t, sol.y[2])
-    #
-    #    plt.plot(r_plot/1e3, sigma_plot/sigma0, label=f"σ(r)/σ₀ [{e['label']}]", **sty)
-    #
-    ## vertical lines at R_star
-    #
-    # plt.axvline(x=avg_R_star, color=R_star_color, linestyle='--', alpha=0.25)
-    #
-    ## annotate sigma0 values in the corner of the plot
-    # text_lines = []
-    # for i, e in enumerate(entries):
-    #    sigma0 = e["sol"].y[3,0]/M # in Plank masses
-    #    text_lines.append(f"{e['label']}: σ₀ = {sigma0:.2e}")
-    #
-    # plt.text(
-    #    0.98, 0.02, "\n".join(text_lines),
-    #    transform=plt.gca().transAxes,
-    #    va="bottom", ha="right",
-    #    fontsize=9,
-    #    bbox=dict(boxstyle="round", facecolor="white", alpha=1.0)
-    # )
-    #
-    #
-    # plt.xlabel('r [Km]')
-    # plt.legend(); plt.grid(False)
-    # plt.title('Scalar field σ(r)')
-    # plt.tight_layout()
-    # plt.savefig(savepath + "sigma_norm.png", dpi=dpi_val)
     # plt.show()
 
 

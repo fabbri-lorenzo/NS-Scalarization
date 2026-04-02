@@ -37,11 +37,11 @@ rho_eqState = rho_SLy4
 frac_pc = 1e-10  # Fraction of p_c to stop integration
 
 # Physical couplings
-m = 1e-20  # scalar mass (eV)
+m = 1e-11  # scalar mass (eV)
 lmbda = 0.0  # self–coupling (dimensionless)
 nu = 0.0  # vacuum expectation value (eV)
-xi = -9.5  # non-minimal coupling
-# xi = 49000 * np.sqrt(lmbda)  # non-minimal coupling
+xi = 10  # non-minimal coupling
+# xi = 49000 * np.sqrt(lmbda)
 
 # Choose integrator method based on parameter regime
 method = "BDF"
@@ -59,12 +59,12 @@ rel_cut = 1e-2
 merge_tol = a * 1e-2
 
 def main() -> None:
+    """Run the solver for light and heavy stars and plot results."""
     # Print run header
     custom_print(
-        f"\nξ = {xi:.0g} | µ = {m:.2e} | λ = {lmbda:.2e} | ν = {nu:.2e} | ν/M = {nu/M:.2e}",
+        f"\nξ = {xi:.0g} | µ = {m:.2e} eV | λ = {lmbda:.2e} | ν = {nu:.2e} eV",
         style="bold",
     )
-    """Run the solver for light and heavy stars and plot results."""
     # Construct a parameter dictionary to be passed to the core solver
     params = {
         "p_eqState": p_eqState,

@@ -358,7 +358,7 @@ def run_scan(
     # fixed values for the other parameter during each scan
     xi_fixed = 10
     lmbda_fixed_for_xi_scan = 0.0
-    mu_fixed_for_xi_scan = 1e-10
+    mu_fixed_for_xi_scan = 1e-12
     # physical constants
     nu_val = 0.0
 
@@ -620,6 +620,7 @@ def run_scan(
 
 if __name__ == "__main__":
     # run_scan(stars="both", scans="xi")
+
     plot_scan_results(
         scan="lambda_scan",
         xi=100,
@@ -628,17 +629,36 @@ if __name__ == "__main__":
         base_dir="Results_final/EMG/scan",
         include_modes=(0, 1, 2),
         markers=False,
+        headroom_decades_top=2,
+        headroom_decades_bottom=0,
         dpi=600,
-        out_path="Results/QM_vs_lambda_xi100.pdf",
+        out_path="Results/QM_vs_lambda_xi100.png",
     )
-    # plot_scan_results(
-    #    scan="xi_scan_mu",
-    #    lmbda=0.0,
-    #    mu=(1e-20, 1e-15),
-    #    nu=0.0,
-    #    base_dir="Results_final/ULA/scan",
-    #    include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    #    markers=False,
-    #    dpi=600,
-    #    out_path="Results/QM_vs_xi.pdf",
-    # )
+    plot_scan_results(
+        scan="xi_scan_mu",
+        lmbda=0.0,
+        mu=(0, 1e-20, 1e-12),
+        nu=0.0,
+        base_dir="Results_final/ULA/scan",
+        include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+        plot_zooms=True,
+        markers=False,
+        headroom_decades_top=0,
+        headroom_decades_bottom=0,
+        dpi=600,
+        out_path="Results/QM_vs_xi_ULA.png",
+    )
+    plot_scan_results(
+        scan="xi_scan_lambda",
+        lmbda=(0.0, 1e-105, 1e-60),
+        mu=0.0,
+        nu=0.0,
+        base_dir="Results_final/EMG/scan",
+        include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+        markers=False,
+        EMG_region=True,
+        headroom_decades_top=1,
+        headroom_decades_bottom=0,
+        dpi=600,
+        out_path="Results/QM_vs_xi_EMG.png",
+    )

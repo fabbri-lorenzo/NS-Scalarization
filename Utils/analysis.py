@@ -384,6 +384,7 @@ def integrate_star(
     stop_at_2r=True,
     record_mu2=False,
 ):
+    """Integrate one candidate σ₀ from r0 to r_max; optionally stop at 2R and log μ²."""
     r_span = (r0, r_max)
 
     y0 = initial_conditions(r0, sigma0, p_eqState, xi, m2, rho0, lmbda, nu)

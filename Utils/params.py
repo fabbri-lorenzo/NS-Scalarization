@@ -42,17 +42,3 @@ def nu_ev_to_SI(nu_ev):
     """Convert vacuum expectation value from eV to SI units (kg)."""
     return nu_ev * e / np.sqrt(hbar * c)
 
-
-# print(lmbda_to_SI(1e-80))
-# print(hbar * c / M2)
-# print(1 / M2)
-# print(1 / M**1.9)
-# xi_EMG = 0.5
-# xi_H = 1e5
-# lmbda_H = xi_H**2 / 49000
-# print(
-#    np.sqrt(
-#        (xi_H * (1e18 * c * c - lmbda_H * v_higgs**4) + lmbda_H * v_higgs**2 * M2)
-#        / (M2 * lmbda_H * (M2 + xi_H * v_higgs**2))
-#    )
-# )

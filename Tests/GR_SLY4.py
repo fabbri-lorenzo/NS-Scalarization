@@ -1,3 +1,5 @@
+"""Baseline GR TOV integration using the SLy4 equation of state (no scalar)."""
+
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
@@ -23,6 +25,7 @@ def _fit_polytrope_to_SLy4(rho_ref, span=2.5, n=100):
 
 # === Initial Conditions ===
 def initial_conditions(r0):
+    """Central expansion for pure-GR star used as a sanity check."""
     rho0 = rho0_lightS  # Density in Kg/m^3
     p0 = p_eqState(rho0)
     m0 = (4/3) * np.pi * rho0 * r0**3 *G_N/(c*c) #reduced mass
@@ -64,6 +67,7 @@ def tov_system(r, y):
 
 # === Integrator Wrapper ===
 def integrate_star(r0, r_max):
+    """Integrate GR TOV from r0 to r_max, stopping at the surface."""
     r_span = (r0, r_max)
     y0 = initial_conditions(r0)
     p_c = y0[0]
@@ -176,12 +180,12 @@ if __name__ == "__main__":
     )  # in Solar Masses
 
     # ===== Plotting section: pressure + mass profiles =====
-    # main EoS solution (assumed already computed)
+    # main EoS solution
     # r = sol.t
     # P = sol.y[0]
-    # R = r[-1]   # if you don't already have R defined
+    # R = r[-1]
 
-    # polytrope solution (already computed in your snippet)
+    # polytrope solution
     # r_poly = sol_poly.t
     # P_poly = sol_poly.y[0]
 
@@ -218,15 +222,8 @@ if __name__ == "__main__":
     # -------------------------
     M_sun = 1.98847e30  # kg
 
-    # IMPORTANT:
-    # If your integrated variable y[1] is the *geometrized mass* (in meters),
-    # use the conversion below (typical in TOV setups).
     M_prof = sol.y[1] * (c**2 / G_N) / M_sun
     M_poly_prof = sol_poly.y[1] * (c**2 / G_N) / M_sun
-
-    # If instead sol.y[1] is already in kg, use this instead:
-    # M_prof = sol.y[1] / M_sun
-    # M_poly_prof = sol_poly.y[1] / M_sun
 
     axM.plot(r / 1e3, M_prof, color="blue", label="Mass SLy4")
     axM.plot(r_poly / 1e3, M_poly_prof, color="red", label="Mass Polytrope")
@@ -250,48 +247,3 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig("Tests/Results_rhoe17/comparison.png", dpi=300)
     plt.show()
-
-    ## === Define radii (m) ===
-    # R_m = R
-    # r_cc_m = 10.4e3
-    # r_drip_m = 11.4e3
-#
-## === Shade regions and collect handles ===
-# region_handles, region_labels = shade_crust_regions(ax, R_m, r_cc_m, r_drip_m)
-#
-## === First legend: physical quantities ===
-# legend1 = ax.legend(loc="center left", bbox_to_anchor=(0.01, 0.35), framealpha=0.9)
-## legend1 = ax.legend(loc="best", framealpha=0.9)
-#
-### === Second legend: structure ===
-# legend2 = ax.legend(
-#    region_handles,
-#    region_labels,
-#    title="Stellar Regions (SLy4)",
-#    loc="center left",
-#    bbox_to_anchor=(0.01, 0.6),
-#    framealpha=0.9,
-# )
-# ax.add_artist(legend1)  # ensure both legends appear
-#
-# ax.grid(False)
-# fig.tight_layout()
-# fig.savefig("Tests/Results_rhoe17/pressureGR_shaded.png", dpi=300)
-# plt.show()
-
-## --- Mass and metric ---
-# plt.plot(
-#    r / 1e3,
-#    sol.y[1] * (c * c / G_N) / (SM),
-#    color="indigo",
-#    label="Mass m(r) in Solar Masses",
-# )
-# plt.plot(
-#    sol.t / 1e3, np.exp(Phi_norm), color="darkcyan", label="Metric Function e^2Φ(r)"
-# )
-# plt.xlabel("r [Km]")
-# plt.legend()
-# plt.grid(True)
-# plt.title("Mass Metric GR")
-# plt.savefig("Tests/Results_rhoe17/mass_metricGR.png", dpi=300)
-# plt.show()
