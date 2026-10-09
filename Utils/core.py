@@ -26,6 +26,8 @@ from typing import Dict, Any, Tuple, List
 import numpy as np
 
 from Utils.params import (
+    c,
+    G_N,
     M,
     SM,
     rho0_lightS,
@@ -77,6 +79,9 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         ``abs_cut``, ``rel_cut``, ``merge_tol`` : numerical tolerances for
             root finding.
 
+        ``max_plot_modes`` : optional positive integer limiting how many
+            accepted mode numbers are sent to the plotting routines.
+
     rho0 : float
         Central density of the neutron star (in kg/m³).  Use
         ``rho0_lightS`` or ``rho0_heavyS`` from :mod:`Utils.params` for the
@@ -103,6 +108,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         ``data_rows`` : list of lists, each inner list corresponding to a
             row written to the CSV file.  The first row is the header.
     """
+
     # Unpack required parameters; provide sensible defaults where possible
     p_eqState = params.get("p_eqState", p_SLy4)
     rho_eqState = params.get("rho_eqState", rho_SLy4)
@@ -118,6 +124,17 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
     abs_cut = float(params.get("abs_cut", a * 1e-2))
     rel_cut = float(params.get("rel_cut", 1e-2))
     merge_tol = float(params.get("merge_tol", a * 1e-2))
+    max_plot_modes = params.get("max_plot_modes", None)
+    n_coarse = int(params.get("n_coarse", 71))
+    inner_parallel = params.get("parallel", True)
+    tail = tuple(params.get("tail", (250_000, 300_000)))
+    n_int_points = int(params.get("n_int_points", 1000))
+    r_max_val = float(params.get("r_max", 3e5))  # in metres
+
+    if max_plot_modes is not None:
+        max_plot_modes = int(max_plot_modes)
+        if max_plot_modes < 1:
+            raise ValueError("max_plot_modes must be None or a positive integer.")
 
     # Determine star label
     star_weight = ""
@@ -149,7 +166,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
 
     # Integration radial domain
     r0 = 1e-2  # m
-    r_max = 3e5  # m
+    r_max = r_max_val  # m
 
     # ---------- 1) adaptive diagnostic scan ----------
     scan = diagnostic_scan(
@@ -166,13 +183,13 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
         method=method,
         a=a,
         b=b,
-        n_coarse=41,
-        n_refine=41,
+        n_coarse=n_coarse,
+        n_refine=101,
         target=target_shooting,
-        expand_coarse_points=1,
-        detect_near_zero=True,
+        expand_coarse_points=5,
+        detect_near_zero=True,  ##
         compress_brackets=True,
-        parallel=True,
+        parallel=inner_parallel,  ##
     )
     brackets = scan["brackets"]
     F_coarse = scan["F_coarse"]
@@ -224,6 +241,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
     # ---------- 3) integrate each σ₀ candidate to 2R and classify modes ----------
     per_mode: Dict[int, List[Dict[str, Any]]] = {}
     nu_abs = abs(nu_val_SI)
+    radius_lookup = {}
     for s0 in s0_list:
         sol, mu2_log, R_star_m = integrate_star(
             s0,
@@ -247,6 +265,8 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
                 color="yellow",
             )
             continue
+        radius_lookup[s0] = R_star_m
+
         # choose the target sign for node counting based on the vacuum reached
         if nu_val != 0.0:
             diff_plus = abs(smax_by_s0[s0] - nu_abs)
@@ -297,7 +317,10 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
             sigma0_by_mode.setdefault(n, []).append(pick["s0"])
             custom_print(f"[OK] n={n}: σ₀ = {pick['s0']/M:.4e} M_Pl", color="cyan")
 
-    selected_pairs = [(n, s0) for n, s_list in sigma0_by_mode.items() for s0 in s_list]
+    selected_pairs = sorted(
+        [(n, s0) for n, s_list in sigma0_by_mode.items() for s0 in s_list],
+        key=lambda pair: (pair[0], pair[1]),
+    )
     if not selected_pairs:
         custom_print(
             "[WARN] No σ₀ solutions selected. Consider widening the bracket or relaxing thresholds.",
@@ -326,32 +349,16 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
             "Q_over_Msun",
             "Q_over_ADM",
             "R_star_km",
+            "r_bar_m",
         ]
     ]
     # open CSV for writing
+    plotted_modes: List[int] = []
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(rows[0])
         for n, s0 in selected_pairs:
-            # integrate twice: once to 2R for r_star and mu2, once fully for ADM and Q
-            sol, mu2_log, R_star_m = integrate_star(
-                s0,
-                p_eqState,
-                rho_eqState,
-                r0,
-                r_max,
-                xi_val,
-                m2_val,
-                lmbda_val_SI,
-                nu_val_SI,
-                rho0,
-                frac_pc,
-                method=method,
-                stop_at_2r=True,
-                record_mu2=True,
-            )
-            r_star_km = (R_star_m / 1e3) if (R_star_m is not None) else float("nan")
-            sol_bnd, _, _ = integrate_star(
+            sol_bnd, mu2_log, R_star_m = integrate_star(
                 s0,
                 p_eqState,
                 rho_eqState,
@@ -365,11 +372,23 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
                 frac_pc,
                 method=method,
                 stop_at_2r=False,
-                record_mu2=False,
+                record_mu2=True,
+                n_int_points=n_int_points,
             )
-            ADM_mass = adm_mass_from_sol(sol_bnd, k_tail=15)
-            scalar_charge = scal_charge_from_sol(
-                sol_bnd, m2_val, lmbda_val_SI, nu_val_SI, r_max
+            R_star_m = radius_lookup.get(s0, R_star_m)
+
+            r_star_km = (R_star_m / 1e3) if (R_star_m is not None) else float("nan")
+
+            ADM_mass = adm_mass_from_sol(sol_bnd, tail)
+            if not np.isfinite(ADM_mass) or ADM_mass <= 0.0:
+                custom_print(
+                    f"[REJECT] n={n}: discarded solution with ADM mass / M_sun = {ADM_mass/SM:.2e}",
+                    color="yellow",
+                )
+                continue
+
+            scalar_charge, r_bar = scal_charge_from_sol(
+                sol_bnd, n, m2_val, lmbda_val_SI, nu_val_SI, r_max, tail
             )
             # determine vacuum sign of this solution
             if nu_val != 0.0:
@@ -380,31 +399,43 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
             else:
                 vac_sign = 0
             vac_label = "0" if vac_sign == 0 else ("+" if vac_sign == +1 else "-")
-            vacuum_sols[vac_label] += 1
             # print small summary to captured log
             custom_print(f"\nResults for n={n} mode", style="bold")
-            print("ADM mass / M_sun = ", f"{ADM_mass/SM:.2e}")
-            print("Scalar charge / M_sun = ", f"{scalar_charge/SM:.2e}")
+            print("ADM mass / M_sun = ", f"{ADM_mass/SM:.3e}")
             print(
-                "Q/M ratio = ",
-                f"{(scalar_charge/ADM_mass) if ADM_mass != 0 else float('nan'):.2e}",
+                "Q/ADM ratio = ",
+                f"{(scalar_charge/ADM_mass) if ADM_mass != 0 else float('nan'):.3e}",
             )
+            if r_bar is not None:
+                print("r_bar (m) = ", f"{r_bar:.3e}")
+
             # build plotting entry
             r_mu, mu2 = (
                 np.array(mu2_log, dtype=float).T
                 if mu2_log
                 else (np.array([]), np.array([]))
             )
-            plot_entries.append(
-                {
-                    "label": f"n={n}",
-                    "sol": sol,
-                    "r_star": r_star_km,
-                    "r_mu": r_mu,
-                    "mu2": mu2,
-                    "vacuum_sign": vac_sign,
-                }
-            )
+
+            should_plot = True
+            if max_plot_modes is not None and n not in plotted_modes:
+                should_plot = len(plotted_modes) < max_plot_modes
+            if should_plot:
+                if n not in plotted_modes:
+                    plotted_modes.append(n)
+                vacuum_sols[vac_label] += 1
+                plot_entries.append(
+                    {
+                        "label": f"n={n}",
+                        "sol": sol_bnd,
+                        "r_star": r_star_km,
+                        "r_mu": r_mu,
+                        "mu2": mu2,
+                        "vacuum_sign": vac_sign,
+                        "scalar_charge": scalar_charge,
+                        "r_bar": r_bar,
+                        "ADM_mass": ADM_mass,
+                    }
+                )
             # write CSV row
             row = [
                 n,
@@ -414,6 +445,7 @@ def solve_model(params: Dict[str, Any], rho0: float) -> Dict[str, Any]:
                 f"{scalar_charge/SM:.3e}",
                 f"{(scalar_charge/ADM_mass) if ADM_mass != 0 else float('nan'):.3e}",
                 f"{r_star_km:.3e}",
+                f"{r_bar:.3e}" if r_bar is not None else "nan",
             ]
             writer.writerow(row)
             rows.append(row)

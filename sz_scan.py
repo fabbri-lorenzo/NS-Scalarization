@@ -125,6 +125,7 @@ def _write_scan_row(
             Q_over_Msun,
             Q_over_ADM,
             R_star_km,
+            r_bar_m,
         ) = row
         writer.writerow(
             [
@@ -356,17 +357,22 @@ def run_scan(
         1e-5,
     ]
     # fixed values for the other parameter during each scan
-    xi_fixed = 10
+    xi_fixed = 100
     lmbda_fixed_for_xi_scan = 0.0
     mu_fixed_for_xi_scan = 1e-12
     # physical constants
     nu_val = 0.0
+
+    parallel = (
+        True if stars == "both" else False
+    )  # only parallelise if scanning both stars
 
     # base parameter template (common to all scan points)
     params_template: Dict[str, Any] = {
         "p_eqState": p_SLy4,
         "rho_eqState": rho_SLy4,
         "frac_pc": 1e-10,
+        "parallel": parallel,
         # The following will be overridden per point
         "xi": xi_fixed,
         "mu": mu_fixed_for_xi_scan,
@@ -467,6 +473,7 @@ def run_scan(
     # ---- λ scan at fixed ξ ----
     if do_lambda_scan:
         xi_val = xi_fixed
+        m_val = mu_fixed_for_xi_scan
         for rho0, tag in stars_to_scan:
             custom_print(
                 f"\nPerforming λ–scan for star {tag}: ξ={xi_val:.2e}, ν={nu_val:.2e}",
@@ -475,7 +482,8 @@ def run_scan(
             out_dir = os.path.join("Results", "scan", tag)
             os.makedirs(out_dir, exist_ok=True)
             csv_path = os.path.join(
-                out_dir, f"lmbda_scan_xi={xi_val:.0e}_nu={nu_val:.0e}.csv"
+                out_dir,
+                f"lmbda_scan_xi={xi_val:.0e}_mu={m_val:.0e}_nu={nu_val:.0e}.csv",
             )
             with open(csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
@@ -619,46 +627,56 @@ def run_scan(
 
 
 if __name__ == "__main__":
-    # run_scan(stars="both", scans="xi")
+    run_scan(stars="both", scans="xi")
 
-    plot_scan_results(
-        scan="lambda_scan",
-        xi=100,
-        mu=0.0,
-        nu=0.0,
-        base_dir="Results_final/EMG/scan",
-        include_modes=(0, 1, 2),
-        markers=False,
-        headroom_decades_top=2,
-        headroom_decades_bottom=0,
-        dpi=600,
-        out_path="Results/QM_vs_lambda_xi100.png",
-    )
-    plot_scan_results(
-        scan="xi_scan_mu",
-        lmbda=0.0,
-        mu=(0, 1e-20, 1e-12),
-        nu=0.0,
-        base_dir="Results_final/ULA/scan",
-        include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-        plot_zooms=True,
-        markers=False,
-        headroom_decades_top=0,
-        headroom_decades_bottom=0,
-        dpi=600,
-        out_path="Results/QM_vs_xi_ULA.png",
-    )
-    plot_scan_results(
-        scan="xi_scan_lambda",
-        lmbda=(0.0, 1e-105, 1e-60),
-        mu=0.0,
-        nu=0.0,
-        base_dir="Results_final/EMG/scan",
-        include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-        markers=False,
-        EMG_region=True,
-        headroom_decades_top=1,
-        headroom_decades_bottom=0,
-        dpi=600,
-        out_path="Results/QM_vs_xi_EMG.png",
-    )
+    # plot_scan_results(
+    #    scan="lambda_scan",
+    #    xi=100,
+    #    mu=0.0,
+    #    nu=0.0,
+    #    base_dir="Results_final/EMG/scan",
+    #    include_modes=(0, 1, 2, 3, 4),
+    #    markers=False,
+    #    headroom_decades_top=2,
+    #    headroom_decades_bottom=0,
+    #    dpi=600,
+    #    out_path="Results/QM_vs_lambda_xi100.png",
+    # )
+    # plot_scan_results(
+    #    scan="xi_scan_mu",
+    #    lmbda=0.0,
+    #    mu=(0, 1e-20, 1e-12),
+    #    nu=0.0,
+    #    base_dir="Results_final/ULA/scan",
+    #    include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    #    plot_zooms=True,
+    #    markers=False,
+    #    headroom_decades_top=0,
+    #    headroom_decades_bottom=0,
+    #    dpi=600,
+    #    out_path="Results/QM_vs_xi_ULA.png",
+    # )
+    #plot_scan_results(
+    #    scan="xi_scan_lambda",
+    #    lmbda=(0.0, 1e-105, 1e-70, 1e-60),
+    #    mu=0.0,
+    #    nu=0.0,
+    #    base_dir="Results_final/EMG/scan",
+    #    include_modes=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    #    markers=False,
+    #    EMG_region=True,
+    #    headroom_decades_top=1,
+    #    headroom_decades_bottom=0,
+    #    plot_zooms=True,
+    #    manual_zoom_regions=[
+    #    {
+    #        "x_min": -8,
+    #        "x_max": -7,
+    #        "y_min": 4.9e-3,
+    #        "y_max": 5.2e-3,
+    #        "n_points": 1,
+    #    }
+    #],
+    #    dpi=600,
+    #    out_path="Results/QM_vs_xi_EMG.png",
+    #)

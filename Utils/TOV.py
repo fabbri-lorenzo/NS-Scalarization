@@ -16,10 +16,16 @@ def _sigma2_psi2(sigma0, p0, eps0, xi, m2, lmbda, nu):
     center expansion.
     """
     denom_sigma = 6 * (M2 + xi * sigma0**2 + 6 * xi**2 * sigma0**2)
+    # sigma2 = (
+    #    M2 * lmbda * sigma0**3
+    #    - xi * sigma0 * (eps0 - 3 * p0 + lmbda * nu**4 - 2 * lmbda * nu**2 * sigma0**2)
+    #    + m2 * sigma0 * (M2 - xi * sigma0**2)
+    # ) / denom_sigma
     sigma2 = (
         M2 * lmbda * sigma0**3
-        - xi * sigma0 * (eps0 - 3 * p0 + lmbda * nu**4 - 2 * lmbda * nu**2 * sigma0**2)
+        - M2 * lmbda * nu**2 * sigma0
         + m2 * sigma0 * (M2 - xi * sigma0**2)
+        - xi * sigma0 * (eps0 - 3 * p0 + lmbda * nu**4 - lmbda * nu**2 * sigma0**2)
     ) / denom_sigma
     denom_Psi = 6 * (M2 + xi * sigma0**2)
     Psi2 = (
@@ -149,37 +155,25 @@ def make_tov(
             denom_Psi_bar = r * denom_dPhi
 
             # build numerator in pieces for easier guarding/debugging
-            num_Psi_bar_1 = (1.0 - g11) * F_val
-            num_Psi_bar_2 = r**2 * (
-                2.0 * xi * ((dPhi + 2.0 / r) * sigma * dsigma + dsigma**2)
+            num_Psi_bar = (1.0 - g11) * F_val + r**2 * (
+                2.0 * xi * ((2.0 / r) * sigma * dsigma + dsigma**2)
                 + g11 * (eps + V_val)
                 + 0.5 * dsigma**2
             )
 
-            Psi_bar = (num_Psi_bar_1 + num_Psi_bar_2) / denom_Psi_bar
+            Psi_bar = num_Psi_bar / denom_Psi_bar
 
             # -------------------------
             # d²sigma/dr²
             # -------------------------
-            denom_ddsigma = 2.0 * F_val * (F_val + 6.0 * xi**2 * sigma**2)
+            prefactor_ddsigma = (2.0 * F_val + r * F_prime) / (2.0 * F_val)
 
-            prefactor_ddsigma = (2.0 * F_val + r * F_prime) / denom_ddsigma
+            bracket_1 = (
+                g11 * (F_val * dV_val - xi * sigma * (eps - 3 * p + 4 * V_val))
+                - xi * sigma * (1 + 6 * xi) * dsigma**2
+            ) / (F_val + 6 * (xi * sigma) ** 2)
 
-            bracket_1 = F_val * (
-                g11 * dV_val - dPhi * dsigma - 2.0 * dsigma / r + Psi_bar * dsigma
-            )
-
-            bracket_2 = (
-                xi
-                * sigma
-                * (
-                    dsigma**2
-                    + g11 * (4.0 * V_val + eps - 3.0 * p)
-                    + 6.0
-                    * xi
-                    * ((dPhi - Psi_bar + 2.0 / r) * sigma * dsigma + dsigma**2)
-                )
-            )
+            bracket_2 = (dPhi + 2.0 / r - Psi_bar) * dsigma
 
             dd_sigma = prefactor_ddsigma * (bracket_1 - bracket_2)
 
@@ -200,38 +194,29 @@ def make_tov(
             # -------------------------
             # effective mass squared mu²
             # -------------------------
-            # inv_g11 = 1.0 / g11
-            #
-            # mu2_inner = (
-            #    inv_g11 * dsigma**2
-            #    + 4.0 * V_val
-            #    + eps
-            #    - 3.0 * p
-            #    + 6.0
-            #    * xi
-            #    * inv_g11
-            #    * (
-            #        (dPhi - dPsi + 2.0 / r) * sigma * dsigma
-            #        + dsigma**2
-            #        + sigma * dd_sigma
-            #    )
-            # )
-            # if _unsafe(mu2_inner):
-            #    return [np.nan, np.nan, np.nan, np.nan]
-
-            # mu2 = -(xi / F_val) * mu2_inner +2* lmbda * nu**2 + m2
-            if nu == 0.0 or (nu != 0.0 and lmbda <= m2 / nu**2):
-                mu2 = -(xi / M2) * (eps - 3 * p) + m2 - lmbda * nu**2  # sigma_min is 0
-
-            if nu != 0.0 and lmbda > m2 / nu**2:
-                sigma_min = np.sqrt(nu**2 - m2 / lmbda)
-                mu2 = (
-                    -xi
-                    / F(sigma_min, xi)
-                    * (eps - 3 * p + 4 * V(sigma_min, m2, lmbda, nu))
-                    + 2 * lmbda * nu**2
-                    - 2 * m2
+            mu2 = (
+                m2
+                - lmbda * nu**2
+                + 3 * lmbda * sigma**2
+                + xi
+                * (
+                    dsigma**2 / g11
+                    + 4 * V_val
+                    + eps
+                    - 3 * p
+                    + 3
+                    * 2
+                    * xi
+                    * (
+                        (dPhi - dPsi) * sigma * dsigma
+                        + 2 * sigma * dsigma / r
+                        + dsigma**2
+                        + sigma * dd_sigma
+                    )
+                    / g11
                 )
+                / F_val
+            )
 
             if mu2_recorder is not None:
                 # store (r, mu²) without touching solver tolerances/state

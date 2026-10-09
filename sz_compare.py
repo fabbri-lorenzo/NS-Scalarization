@@ -21,11 +21,19 @@ p_eqState = p_SLy4
 rho_eqState = rho_SLy4
 frac_pc = 1e-10
 
-xi = 500
+xi = 100
 m_fixed = 0.0  # used when comparing lambdas
 lmbda_fixed = 0.0  # used when comparing mus
 nu = 0.0
 method = "BDF"
+
+# Y-axis scale for each comparison plot: "linear", "log", or "symlog".
+# Current historical behavior is pressure linear, mu2/sigma symlog.
+plot_y_scales = {
+    "pressure": "linear",
+    "mu2": "linear",
+    "sigma": "log",
+}
 
 # choose what to sweep: "lambda" or "mu"
 compare_param = "mu"
@@ -112,12 +120,12 @@ def main():
 
     if compare_param == "lambda":
         custom_print(
-            f"\nCOMPARE RUN | ξ={xi} | µ={fixed_mu:.2e} | ν={nu:.2e} | λ in {sweep_values}",
+            f"\nCOMPARE RUN | ξ={xi} | µ={fixed_mu:.2e} | ν={nu:.2e} | λ in {sweep_values} || Method = {method}",
             style="bold",
         )
     else:
         custom_print(
-            f"\nCOMPARE RUN | ξ={xi} | λ={lmbda_fixed:.2e} | ν={nu:.2e} | µ in {sweep_values}",
+            f"\nCOMPARE RUN | ξ={xi} | λ={lmbda_fixed:.2e} | ν={nu:.2e} | µ in {sweep_values} || Method = {method}",
             style="bold",
         )
 
@@ -206,6 +214,7 @@ def main():
             star_label=star_label,
             param=compare_param,
             title=title,
+            y_scales=plot_y_scales,
             # sigma_zoom={
             #    "xlim": (0.0, 0.1),
             #    "ylim": (1e-4, 5e-2),

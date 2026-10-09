@@ -43,175 +43,17 @@ def node_count_to_2R(sol, R_star_m, target, idx_sigma=2):
     return count_nodes_sigma(sigma, target)
 
 
-def adm_mass_from_sol(sol, k_tail=15):
+def adm_mass_from_sol(sol, tail):
     r = sol.t
     Psi = sol.y[1]
-    r_tail = r[-k_tail:]
-    Psi_tail = Psi[-k_tail:]
+    mask = (r >= tail[0]) & (r <= tail[1])
+    r_tail = r[mask]
+    Psi_tail = Psi[mask]
     dPsi_tail = np.gradient(Psi_tail, r_tail)
     M_vals = -(r_tail**2) * dPsi_tail * np.exp(-2.0 * Psi_tail)
     M_len = np.median(M_vals)
     M_kg = M_len * (c * c) / G_N
     return M_kg
-
-
-def tail_charge_with_Rlog(sol, R_log, *, idx_sigmap=3, r_window=("frac", 0.5, 0.95)):
-    """
-    Given R_log, estimate Q from the tail using
-        Q(r) = - sigma'(r) * r^2 * sqrt(ln(r / R_log))
-    and return the median over the chosen tail window.
-
-    Arguments:
-    ----------
-    sol : OdeSolution (from solve_ivp)
-        Full solution object containing t (r grid) and y (state vars).
-    R_log : float
-        The fitted R_log constant used inside the sqrt log term.
-    idx_sigmap : int
-        Index of sigma' inside sol.y (default 3).
-    r_window : tuple
-        ('frac', f1, f2) → use fraction of the integration domain.
-        (r1, r2) → use explicit physical radii.
-    """
-    import numpy as np
-
-    r = np.asarray(sol.t)
-    sp = np.asarray(sol.y[idx_sigmap], dtype=float)
-
-    # choose tail region
-    if isinstance(r_window, tuple) and len(r_window) == 3 and r_window[0] == "frac":
-        _, f1, f2 = r_window
-        r1 = r.min() + f1 * (r.max() - r.min())
-        r2 = r.min() + f2 * (r.max() - r.min())
-    else:
-        r1, r2 = r_window
-
-    mask = (r >= r1) & (r <= r2) & np.isfinite(sp)
-    r_tail = r[mask]
-    sp_tail = sp[mask]
-
-    if r_tail.size < 10:
-        # fallback: last 20% of the domain
-        mask = (r >= r.min() + 0.8 * (r.max() - r.min())) & np.isfinite(sp)
-        r_tail = r[mask]
-        sp_tail = sp[mask]
-
-    # compute Q(r) samples
-    L = np.log(r_tail) - np.log(R_log)
-    Q_samples = -sp_tail * (r_tail**2) * np.sqrt(L)
-
-    return float(np.median(Q_samples))
-
-
-# utility to robustly sample the tail (uses dense_output if present)
-def _sample_tail(sol, idx_sigmap=3, r_window=("frac", 0.5, 0.95), n_points=400):
-    """
-    Returns (r_tail, sigma_p_tail) sampled uniformly in r over the chosen window.
-    If sol.sol is available (dense_output=True), we evaluate it; otherwise we downsample sol.t/sol.y.
-    """
-    import numpy as np
-
-    r_all = np.asarray(sol.t, dtype=float)
-    # choose window (fractional or absolute)
-    if isinstance(r_window, tuple) and len(r_window) == 3 and r_window[0] == "frac":
-        _, f1, f2 = r_window
-        r1 = r_all.min() + f1 * (r_all.max() - r_all.min())
-        r2 = r_all.min() + f2 * (r_all.max() - r_all.min())
-    else:
-        r1, r2 = r_window
-
-    if r2 <= r1:
-        r1, r2 = r1, max(r1 * (1.0 + 1e-6), r1 + 1e-6)
-
-    # primary: dense_output
-    r_tail = None
-    sp_tail = None
-    if hasattr(sol, "sol") and callable(sol.sol):
-        r_tail = np.linspace(r1, r2, int(max(50, n_points)))
-        y_tail = sol.sol(r_tail)  # shape (n_state, n_points)
-        sp_tail = np.asarray(y_tail[idx_sigmap], dtype=float)
-    else:
-        # fallback: use raw points within window, then (optionally) interpolate
-        mask = (r_all >= r1) & (r_all <= r2)
-        r_raw = r_all[mask]
-        sp_raw = np.asarray(sol.y[idx_sigmap], dtype=float)[mask]
-        if r_raw.size >= 10:
-            r_tail = r_raw
-            sp_tail = sp_raw
-        else:
-            # last-ditch: take last chunk of domain
-            mask = r_all >= (r_all.min() + 0.8 * (r_all.max() - r_all.min()))
-            r_tail = r_all[mask]
-            sp_tail = np.asarray(sol.y[idx_sigmap], dtype=float)[mask]
-
-    # final sanitation
-    finite = np.isfinite(sp_tail)
-    r_tail = r_tail[finite]
-    sp_tail = sp_tail[finite]
-    return r_tail, sp_tail
-
-
-# Robust tail fit for (Q, R_log) in the λ≠0 case
-def fit_tail_Rlog_and_Q(
-    sol,
-    *,
-    idx_sigma=2,
-    idx_sigmap=3,
-    r_window=("frac", 0.2, 0.6),  # use fractional by default to avoid empty windows
-    min_points=40,
-    n_points=600
-):
-    """
-    Fit sigma'(r) ≈ -Q / (r^2 * sqrt(ln(r/R_log))) over the far-field tail.
-    Uses dense_output to ensure enough points; includes multi-stage fallbacks.
-    Returns (Q_fit, R_log_fit).
-    """
-    import numpy as np
-    from scipy.optimize import curve_fit
-
-    # 1) try the requested window
-    r_fit, sp_fit = _sample_tail(
-        sol, idx_sigmap=idx_sigmap, r_window=r_window, n_points=n_points
-    )
-
-    # 2) fallback if insufficient
-    if r_fit.size < min_points:
-        # use last 50% of domain
-        r_fit, sp_fit = _sample_tail(
-            sol, idx_sigmap=idx_sigmap, r_window=("frac", 0.5, 0.98), n_points=n_points
-        )
-
-    # 3) last fallback
-    if r_fit.size < min_points:
-        r_fit, sp_fit = _sample_tail(
-            sol, idx_sigmap=idx_sigmap, r_window=("frac", 0.7, 0.995), n_points=n_points
-        )
-
-    if r_fit.size < min_points:
-        raise RuntimeError(
-            "fit_tail_Rlog_and_Q: insufficient tail points for a stable fit"
-        )
-
-    # model
-    def model(rvals, Q, lnR):
-        L = np.log(rvals) - lnR
-        L = np.maximum(L, 1e-12)
-        return -Q / (rvals**2 * np.sqrt(L))
-
-    # initial guesses
-    q0_samples = -sp_fit * (r_fit**2)
-    q0 = float(np.median(q0_samples[np.isfinite(q0_samples)]))
-    lnR0 = float(np.log(max(r_fit.min() * 0.2, 1.0)))
-
-    # bounds to keep ln(r/R) > 0 in-window
-    upper_lnR = float(np.log(r_fit.min() * 0.999))
-    bounds = ([-np.inf, -np.inf], [np.inf, upper_lnR])
-
-    popt, _ = curve_fit(
-        model, r_fit, sp_fit, p0=(q0, lnR0), bounds=bounds, maxfev=50000
-    )
-    Q_fit, lnR_fit = popt
-    return float(Q_fit), float(np.exp(lnR_fit))
 
 
 # Scal_charge_from_sol now auto-fits R_log when λ ≠ 0 and tail-averages Q
@@ -279,17 +121,54 @@ def tail_charge_yukawa(
     return float(np.median(Q_samples))
 
 
+def tail_quartic(n, lam, r_tail, sigma_tail):
+    from scipy.optimize import curve_fit
+
+    def sigma_model(r, Q, lnr_bar, lam):
+        """
+        sigma(r) ~ Q / (r * sqrt(1 + 2*Q^2*lambda*ln(r/r_bar)))
+        """
+        return Q / (r * np.sqrt(1 + 2 * lam * Q**2 * (np.log(r) - lnr_bar)))
+
+    # Auto-estimate initial guess from a simple 1/r Coulomb-like fit
+    Q0 = np.median(sigma_tail * r_tail)  # rough charge estimate
+    lnr_bar0 = np.log(r_tail[0])  # start of tail region
+    g0 = [Q0, lnr_bar0]
+
+    # Wrap model to fix lambda
+    def model_fixed_lam(r, Q, lnr_bar):
+        return sigma_model(r, Q, lnr_bar, lam)
+
+    if n % 2 == 0:
+        correct_bounds = ([0.0, 0.0], [np.inf, np.log(r_tail[0])])  # Q > 0 for even n
+    else:
+        correct_bounds = ([-np.inf, 0.0], [0.0, np.log(r_tail[0])])  # Q < 0 for odd n
+
+    popt, pcov = curve_fit(
+        model_fixed_lam,
+        r_tail,
+        sigma_tail,
+        p0=g0,
+        bounds=correct_bounds,
+        maxfev=50_000,
+    )
+
+    Q_fit, lnr_bar_fit = popt
+    return Q_fit, np.exp(lnr_bar_fit)  # return Q and r_bar
+
+
 def scal_charge_from_sol(
     sol,
+    n,
     m2,
     lmbda,
     nu,
     r_max,
+    tail,
     *,
     idx_sigma=2,
     idx_sigmap=3,
     r_window_Q=("frac", 0.6, 0.95),
-    R_log_override=None
 ):
     """
     Scalar charge with correct asymptotics by regime:
@@ -302,18 +181,32 @@ def scal_charge_from_sol(
     import numpy as np
     from Utils.params import M, c, G_N
 
+    # print(f"Total integration points: {len(sol.t)}")
+
+    r = sol.t
+    mask = (r >= tail[0]) & (r <= tail[1])
+    r_tail = r[mask]
+    sigma = sol.y[idx_sigma]
+    sigma_tail = sigma[mask]
+    sigmap = sol.y[idx_sigmap]
+    sigmap_tail = sigmap[mask]
+
     # --- DEF: massless linear (Coulomb) ---
     if (lmbda == 0.0) and (nu == 0.0) and (m2 == 0.0):
-        Q_num = -(r_max**2) * float(sol.y[idx_sigmap][-1])
-        return Q_num / M * (c * c) / G_N
+        Q_vals = -(r_tail**2) * sigmap_tail
+        Q_num = np.median(Q_vals)
+        return Q_num / M * (c * c) / G_N, None  # convert to physical units
 
     # physical mass exponent (same units as 1/r)
     m_mass = float(np.sqrt(max(0.0, m2)))  # m2 is μ^2
 
     # --- MASSIVE (ν==0): Yukawa around σ∞=0 ---
     if (nu == 0.0) and (m_mass > 0.0):
-        Q_num = float(sol.y[idx_sigma][-1]) * np.exp(m_mass * r_max) * r_max
-        return Q_num / M * (c * c) / G_N
+        Q_num = np.average(
+            -np.exp(m_mass * r_tail) * sigmap_tail * r_tail**2 / (1 + m_mass * r_tail)
+        )
+        #Q_num = np.average(-np.exp(m_mass * r_tail)) * sigma_tail*r_tail
+        return Q_num / M * (c * c) / G_N, None  # convert to physical units
 
     # --- YUKAWA: m = sqrt(2 λ) |ν|, use σ-based estimator (stable) ---
     if nu != 0.0:
@@ -325,46 +218,14 @@ def scal_charge_from_sol(
             Q_num = tail_charge_yukawa(
                 sol, m, nu, idx_sigma=idx_sigma, r_window=r_window_Q
             )
-        return Q_num / M * (c * c) / G_N
+        return Q_num / M * (c * c) / G_N, None  # convert to physical units
 
     # --- PURE QUARTIC: ν==0, λ>0 → log-improved Coulomb ---
-    # fit R_log if needed, then aggregate with your existing estimator
-    if R_log_override is not None:
-        R_log = float(R_log_override)
-    else:
-        # try several windows to avoid "insufficient tail points"
-        tried = [
-            ("frac", 0.2, 0.6),
-            ("frac", 0.4, 0.9),
-            ("frac", 0.6, 0.98),
-        ]
-        R_log = None
-        last_err = None
-        for win in tried:
-            try:
-                _, R_log = fit_tail_Rlog_and_Q(
-                    sol,
-                    idx_sigma=idx_sigma,
-                    idx_sigmap=idx_sigmap,
-                    r_window=win,
-                    min_points=40,
-                    n_points=800,
-                )
-                break
-            except Exception as e:
-                last_err = e
-                R_log = None
-        if R_log is None:
-            # graceful fallback: keep ln(r/R)>0 on the tail
-            r_all = np.asarray(sol.t, dtype=float)
-            r_min_tail = r_all.min() + 0.6 * (r_all.max() - r_all.min())
-            R_log = float(max(1.0, 0.2 * r_min_tail))
+    r_bar = None
+    if (nu == 0.0) and (lmbda > 0.0):
+        Q_num, r_bar = tail_quartic(n, lmbda, r_tail, sigma_tail)
 
-    # aggregate Q over tail for the quartic case
-    Q_num = tail_charge_with_Rlog(
-        sol, R_log, idx_sigmap=idx_sigmap, r_window=r_window_Q
-    )
-    return Q_num / M * (c * c) / G_N
+    return Q_num / M * (c * c) / G_N, r_bar  # convert to physical units
 
 
 # Integrator wrapper (returns OdeResult, μ² log, and R_* in meters)
@@ -383,6 +244,7 @@ def integrate_star(
     method="RK45",
     stop_at_2r=True,
     record_mu2=False,
+    n_int_points=1000,
 ):
     """Integrate one candidate σ₀ from r0 to r_max; optionally stop at 2R and log μ²."""
     r_span = (r0, r_max)
@@ -418,27 +280,36 @@ def integrate_star(
 
     if stop_at_2r:
         ev_2R = events.double_radius()
+        t_eval = np.linspace(r0, r_max, 1000)
+
         sol = solve_ivp(
             tov,
             r_span,
             y0,
+            t_eval=t_eval,
             dense_output=True,
             method=method,
-            rtol=1e-6,
-            atol=1e-9,
-            # min_step=1e-5, #only avaible for LSODA
+            rtol=1e-8,
+            atol=1e-10,
             events=[ev_surface, ev_2R, ev_blow],
         )
     else:
+        if n_int_points is not None:
+            t_eval = np.logspace(np.log10(r0), np.log10(r_max), n_int_points)
+            t_eval[0] = r0
+            t_eval[-1] = r_max
+        else:
+            t_eval = None
+
         sol = solve_ivp(
             tov,
             r_span,
             y0,
+            t_eval=t_eval,
             dense_output=True,
             method=method,
             rtol=1e-6,
-            atol=1e-9,
-            # min_step=1e-5, #only avaible for LSODA
+            atol=1e-8,
             events=[ev_blow],
         )
 

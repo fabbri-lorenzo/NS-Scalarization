@@ -391,9 +391,13 @@ def _add_zoom_insets(
     ]
 
     # Default positions of inset windows inside main axes
+    #default_locs = [
+    #    dict(bbox_to_anchor=(0.275, 0.25, 0.35, 0.35)),
+    #    dict(bbox_to_anchor=(0.75, 0.25, 0.35, 0.35)),
+    #]
     default_locs = [
-        dict(bbox_to_anchor=(0.275, 0.25, 0.35, 0.35)),
-        dict(bbox_to_anchor=(0.75, 0.25, 0.35, 0.35)),
+        dict(bbox_to_anchor=(0.28, 0.2315, 0.25, 0.25)),
+        dict(bbox_to_anchor=(0.22, 0.75, 0.25, 0.25)),
     ]
 
     if locs is None:
@@ -476,9 +480,13 @@ def _add_zoom_insets(
 
         axins.set_xlim(x0p, x1p)
         axins.set_ylim(y0p, y1p)
+        from matplotlib.ticker import FormatStrFormatter
 
         axins.tick_params(
             direction="in", which="both", top=True, right=True, labelsize=8
+        )
+        axins.yaxis.set_major_formatter(
+            FormatStrFormatter("%.5f")
         )
         axins.grid(False)
 
@@ -506,11 +514,12 @@ def plot_scan_results(
     scalarized_only=True,
     xi_tol=1e-12,
     figsize=(7.4, 4.4),
-    dpi=300,
+    dpi=600,
     out_path=None,
     EMG_region=False,
     connect_points=True,
     plot_zooms=False,
+    manual_zoom_regions=None,
     markers=False,
     lw=1.6,
     ms=4.5,
@@ -553,16 +562,12 @@ def plot_scan_results(
         scan_kind = "mu_scan"
 
     elif scan_norm in ("xi_scan_lambda", "xi_lambda"):
-        # your old naming convention, if you have it
         df = df[
-            df["source_file"]
-            .astype(str)
-            .str.contains(r"xi_scan_lmbda=", regex=True, na=False)
+            df["source_file"].astype(str).str.contains(r"lmbda=", regex=True, na=False)
         ]
         scan_kind = "xi_scan_lambda"
 
     elif scan_norm in ("xi_scan_mu", "xi_mu", "xi@mu", "xi_by_mu"):
-        # THIS is your current naming convention
         df = df[
             df["source_file"]
             .astype(str)
@@ -845,7 +850,7 @@ def plot_scan_results(
     trans = blended_transform_factory(ax.transAxes, ax.transData)
 
     ax.text(
-        0.75,  # x = 3/4 of axis width
+        0.25,  # x = 3/4 of axis width
         6e-4,  # y = absolute data value
         "PSR J1738+0333",
         transform=trans,
@@ -988,7 +993,7 @@ def plot_scan_results(
         yabs = np.array([1.0])
 
     y_abs_min = float(np.min(yabs))
-    linthresh_y = 2 * y_abs_min if np.any(y_all < 0) else 1e-20
+    linthresh_y = max(2 * y_abs_min if np.any(y_all < 0) else 1e-20, 1e-9)
 
     ax.set_yscale("symlog", linthresh=linthresh_y, linscale=1.0)
 
@@ -1066,13 +1071,18 @@ def plot_scan_results(
 
     # Zoom insets
     if plot_zooms and xcol == "xi" and len(curves) >= 2:
-        zoom_regions = _detect_close_regions(
-            curves,
-            rel_tol=zoom_rel_tol,
-            abs_tol=zoom_abs_tol,
-            min_points=zoom_min_points,
-        )
-        zoom_regions = _merge_zoom_regions(zoom_regions)
+        if manual_zoom_regions is not None:
+            zoom_regions = manual_zoom_regions
+        elif plot_zooms:
+            
+            zoom_regions = _detect_close_regions(
+                curves,
+                rel_tol=zoom_rel_tol,
+                abs_tol=zoom_abs_tol,
+                min_points=zoom_min_points,
+            )
+            zoom_regions = _merge_zoom_regions(zoom_regions)
+       
         _add_zoom_insets(
             ax,
             curves,
@@ -1183,7 +1193,7 @@ def plot_scan_results(
         legend_handles,
         legend_labels,
         loc="best",
-        # bbox_to_anchor=(0.215, 0.6),  # for EMG graph
+        #bbox_to_anchor=(0, 0.4),  # for xi EMG graph
         frameon=True,
         handlelength=2.0,
         handletextpad=0.6,

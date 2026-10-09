@@ -110,21 +110,6 @@ def sigma_residual(
     *,
     return_details=False,
 ):
-    """
-    Residual used for shooting, chosen by asymptotic regime:
-
-      1) Massive around zero (nu == 0, m > 0):
-         Robin on sigma:
-            sigma' + (m + 1/r) sigma = 0
-
-      2) Shifted vacuum / double-well (nu != 0):
-         Robin on delta sigma = sigma - sigma_inf, where sigma_inf = nearest target in {+|nu|,-|nu|}:
-            sigma' + (m_vac + 1/r) (sigma - sigma_inf) = 0
-         with m_vac = sqrt( V''(sigma_inf) ) = sqrt( m2 + 2 lambda nu^2 )
-
-      3) Massless pure quartic (nu == 0, m == 0):
-         fallback to target matching sigma(r_max) -> target (typically 0)
-    """
     sol, _, _ = integrate_star(
         s0,
         p_eqState,
@@ -143,48 +128,28 @@ def sigma_residual(
     )
 
     sigma_end = float(sol.y[idx_sigma, -1])
-    sp_end = float(sol.y[idx_sigma_p, -1])
+    sigma_p_end = float(sol.y[idx_sigma_p, -1])  # Extract the derivative
 
-    # physical "bare" mass around sigma=0
-    m0 = float(np.sqrt(max(0.0, m2)))
-
-    # ------------------------------------------------------------------
-    # (A) Massive around zero: nu == 0 and m0 > 0
-    # ------------------------------------------------------------------
-    if (nu == 0.0) and (m0 > 0.0):
-        delta = sp_end + (m0 + 1.0 / r_max) * sigma_end
-        t_eff = 0.0
-        return (delta, sigma_end, t_eff) if return_details else delta
-
-    # ------------------------------------------------------------------
-    # (B) Shifted vacuum (double-well-type asymptotics): nu != 0
-    #     Apply Robin to delta sigma = sigma - sigma_inf
-    # ------------------------------------------------------------------
-    if nu != 0.0:
-        # choose the asymptotic vacuum branch (+|nu| or -|nu|) closest to sigma_end
-        t_eff = _nearest_target_value(sigma_end, target)  # usually target=[+|nu|,-|nu|]
-
-        # asymptotic mass around the vacuum:
-        # V = 1/2 m2 sigma^2 + lambda/4 (sigma^2 - nu^2)^2
-        # V''(±nu) = m2 + 2 lambda nu^2
-        m_vac_sq = float(m2 + 2.0 * lmbda * (nu**2))
-
-        # If m_vac^2 <= 0, Yukawa Robin is not valid (tachyonic/critical tail);
-        # fallback to target matching.
-        if m_vac_sq > 0.0:
-            m_vac = float(np.sqrt(m_vac_sq))
-            delta = sp_end + (m_vac + 1.0 / r_max) * (sigma_end - t_eff)
-            return (delta, sigma_end, t_eff) if return_details else delta
-
-        # fallback if no positive asymptotic mass
-        delta = sigma_end - t_eff
-        return (delta, sigma_end, t_eff) if return_details else delta
-
-    # ------------------------------------------------------------------
-    # (C) Massless pure quartic / generic non-Yukawa tail fallback
-    # ------------------------------------------------------------------
+    # --- Asymptotic Regime Evaluation ---
     t_eff = _nearest_target_value(sigma_end, target)
-    delta = sigma_end - t_eff
+
+    # 1) Massless case (V=0, meaning m2=0, lmbda=0, nu=0)
+    if m2 == 0.0 and nu == 0.0 and lmbda == 0.0:
+        # Matches sigma' + sigma / r = 0
+        delta = sigma_p_end + (sigma_end / r_max)
+
+    # 2) Pure quartic potential (lambda != 0)
+    elif lmbda != 0.0 and m2 == 0.0 and nu == 0.0:
+        delta = sigma_p_end + (sigma_end / r_max) * (
+            1 + lmbda * (sigma_end * r_max) ** 2
+        )
+
+    # 3) Massive field
+    else:
+        m_eff = np.sqrt(m2 + 2 * lmbda * nu**2)
+        sigma_inf = t_eff
+        delta = sigma_p_end + (m_eff + 1.0 / r_max) * (sigma_end - sigma_inf)
+        
     return (delta, sigma_end, t_eff) if return_details else delta
 
 
@@ -366,10 +331,10 @@ def diagnostic_scan(
     a,
     b,
     *,
-    n_coarse=41,
-    n_refine=81,
+    n_coarse=121,
+    n_refine=101,
     target=0.0,
-    expand_coarse_points=1,
+    expand_coarse_points=2,
     detect_near_zero=True,
     near_zero_factor=5.0,
     compress_brackets=True,
@@ -574,7 +539,7 @@ def find_root_brent(
     method,
     idx_sigma: int = 2,
     rtol: float = 1e-12,
-    maxiter: int = 200,
+    maxiter: int = 1000,
     target=0.0,
 ):
     def f(s0):
@@ -620,25 +585,20 @@ def find_root_brent(
         return None, None, None, None
 
 
-def residual_accept(sigma_rmax, sigma0, target, abs_threshold, tol_relative):
+def residual_accept(delta, sigma0, abs_threshold, tol_relative):
     """
-    Check whether the residual at r_max is acceptable given the target.
+    Check whether the actual shooting residual (delta) is acceptable.
+    Since delta is driven to 0 by Brentq in all regimes (Dirichlet or Robin),
+    we validate the residual directly.
+    """
 
-    - If target == 0: use |σ(r_max)| / |σ0| < tol_relative
-    - If target != 0: use |σ(r_max) - target| / |target| < tol_relative
-    Absolute threshold always applies first.
-    """
-    # absolute check
-    if abs(sigma_rmax - target) <= abs_threshold:
+    # Absolute check on the residual
+    if abs(delta) <= abs_threshold:
         return True, "abs"
 
-    # relative check
-    if target == 0.0:
-        if sigma0 != 0.0 and abs(sigma_rmax) / abs(sigma0) <= tol_relative:
-            return True, "rel"
-    else:
-        if abs((sigma_rmax - target) / target) <= tol_relative:
-            return True, "rel"
+    # Relative check on the residual against the central value scale
+    if (sigma0 != 0.0) and (abs(delta) / abs(sigma0) <= tol_relative):
+        return True, "rel"
 
     return False, None
 
@@ -704,28 +664,13 @@ def probe_brackets(
                 f"[brent] bracket [{u/M:.3e},{v/M:.3e}] → FAILED", color="yellow"
             )
             return
-        m0 = float(np.sqrt(max(0.0, m2_val)))
-        m_vac_sq = float(m2_val + 2.0 * lmbda_val * (nu_val**2))
 
-        uses_robin = ((nu_val == 0.0) and (m0 > 0.0)) or (
-            (nu_val != 0.0) and (m_vac_sq > 0.0)
+        accept, reason = residual_accept(
+            delta=delta,
+            sigma0=s_star,
+            abs_threshold=abs_threshold,
+            tol_relative=tol_relative,
         )
-
-        if uses_robin:
-            # accept based on Robin residual (delta)
-            accept = (abs(delta) <= abs_threshold) or (
-                abs(s_star) > 0.0 and abs(delta) / abs(s_star) <= tol_relative
-            )
-            reason = "robin"
-        else:
-            # fallback (pure quartic/log tail, or non-Yukawa asymptotics)
-            accept, reason = residual_accept(
-                sigma_rmax=sigma_end,
-                sigma0=s_star,
-                target=t_eff,
-                abs_threshold=abs_threshold,
-                tol_relative=tol_relative,
-            )
 
         _, psi2 = _sigma2_psi2(s_star, p0, eps0, xi_val, m2_val, lmbda_val, nu_val)
         psi_ok = np.isfinite(psi2) and (psi2 > 0.0)

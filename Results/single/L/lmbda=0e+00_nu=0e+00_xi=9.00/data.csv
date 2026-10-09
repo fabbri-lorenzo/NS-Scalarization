@@ -1,2 +1,2 @@
-mode_n,vacuum_sign,sigma0_over_M,ADM_over_Msun,Q_over_Msun,Q_over_ADM,R_star_km
-0,0,9.878e-02,9.986e-01,5.593e-01,5.601e-01,1.165e+01
+mode_n,vacuum_sign,sigma0_over_M,ADM_over_Msun,Q_over_Msun,Q_over_ADM,R_star_km,r_bar_m
+0,0,9.980e-02,1.015e+00,5.539e-01,5.459e-01,nan,nan

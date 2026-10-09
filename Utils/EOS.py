@@ -4,7 +4,6 @@
 
 import numpy as np
 from scipy.optimize import brentq
-from Utils.params import c
 # _RHO_CALLS = 0
 _RHO_FLOOR = 1e-12  # kg/m^3, tiny density floor to keep RHS well-defined at the surface
 

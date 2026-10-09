@@ -58,6 +58,54 @@ def _apply_common_axis_style(ax):
     ax.tick_params(axis="x", which="minor", length=3, width=0.8)
 
 
+def _normalize_y_scales(y_scales):
+    defaults = {
+        "pressure": "linear",
+        "mu2": "symlog",
+        "sigma": "linear",
+    }
+    if y_scales is None:
+        return defaults
+    if isinstance(y_scales, str):
+        return {name: y_scales for name in defaults}
+
+    normalized = defaults.copy()
+    normalized.update(y_scales)
+    return normalized
+
+
+def _apply_y_scale(ax, scale, *, linthresh):
+    scale = str(scale).lower()
+    if scale == "linear":
+        ax.set_yscale("linear")
+        return
+
+    if scale == "log":
+        ax.set_yscale("log", nonpositive="mask")
+        ax.tick_params(axis="y", which="major", length=6, width=1)
+        ax.tick_params(axis="y", which="minor", length=3, width=0.8)
+        return
+
+    if scale == "symlog":
+        ax.set_yscale("symlog", linthresh=linthresh)
+        ax.yaxis.set_major_locator(
+            SymmetricalLogLocator(base=10, linthresh=linthresh, subs=(1.0,))
+        )
+        ax.yaxis.set_minor_locator(
+            SymmetricalLogLocator(
+                base=10,
+                linthresh=linthresh,
+                subs=np.arange(2, 10) * 0.1,
+            )
+        )
+        ax.yaxis.set_major_formatter(FuncFormatter(even_decade_only))
+        ax.tick_params(axis="y", which="major", length=6, width=1)
+        ax.tick_params(axis="y", which="minor", length=3, width=0.8)
+        return
+
+    raise ValueError("y scale must be 'linear', 'log', or 'symlog'.")
+
+
 def _add_zoom_inset(
     ax,
     plot_func,
@@ -159,6 +207,7 @@ def plotResults_compare(
     pressure_zoom=None,
     mu2_zoom=None,
     sigma_zoom=None,
+    y_scales=None,
 ):
     """
     Overlay plots for multiple parameter values (λ or μ).
@@ -170,6 +219,7 @@ def plotResults_compare(
                   parameter get exact blue/red/green respectively.
     """
     os.makedirs(savepath, exist_ok=True)
+    y_scales = _normalize_y_scales(y_scales)
 
     param_values = list(entries_by_param.keys())  # preserve insertion order
 
@@ -218,7 +268,7 @@ def plotResults_compare(
     star_color = "black"
 
     # mode line styles
-    mode_linestyles = ["-", "--", ":", "-."]
+    mode_linestyles = ["-", "--", ":", "-.", "."]
 
     # ========== PRESSURE ==========
     plt.figure()
@@ -260,6 +310,7 @@ def plotResults_compare(
     ax.tick_params(axis="x", which="major", length=4, width=1.2)
     ax.tick_params(axis="x", which="minor", length=3, width=0.8)
     plt.ylabel("P [Pa]")
+    _apply_y_scale(ax, y_scales["pressure"], linthresh=1e-12)
     plt.grid(False)
 
     # Legends: mode linestyle, lambda color
@@ -368,22 +419,7 @@ def plotResults_compare(
     plt.ylabel(r"$\mu_{\rm eff}^2$ [Km$^{-2}$]")
     ax = plt.gca()
     linthresh = 1e-12
-
-    plt.yscale("symlog", linthresh=linthresh)
-
-    # ticks that work on BOTH positive and negative sides
-    ax.yaxis.set_major_locator(
-        SymmetricalLogLocator(base=10, linthresh=linthresh, subs=(1.0,))
-    )
-    ax.yaxis.set_minor_locator(
-        SymmetricalLogLocator(base=10, linthresh=linthresh, subs=np.arange(2, 10) * 0.1)
-    )
-
-    # label only even decades
-    ax.yaxis.set_major_formatter(FuncFormatter(even_decade_only))
-
-    ax.tick_params(axis="y", which="major", length=6, width=1)
-    ax.tick_params(axis="y", which="minor", length=3, width=0.8)
+    _apply_y_scale(ax, y_scales["mu2"], linthresh=linthresh)
 
     plt.xlim(left=0, right=2)
     ax.xaxis.set_major_locator(MultipleLocator(0.5))
@@ -492,7 +528,7 @@ def plotResults_compare(
 
     nu_line(nu, vacuum_sols)
     plt.xlabel(r"$r/R_s$")
-    plt.ylabel(r"$\sigma_0 /M_{Pl}$")
+    plt.ylabel(r"$\sigma /M_{Pl}$")
     plt.xlim(left=0, right=2)
     ax = plt.gca()
     ax.xaxis.set_major_locator(MultipleLocator(0.5))
@@ -503,21 +539,7 @@ def plotResults_compare(
     ax.tick_params(axis="x", which="minor", length=3, width=0.8)
     ax = plt.gca()
     linthresh = 1e-8
-
-    plt.yscale("symlog", linthresh=linthresh)
-
-    # ticks that work on BOTH positive and negative sides
-    ax.yaxis.set_major_locator(
-        SymmetricalLogLocator(base=10, linthresh=linthresh, subs=(1.0,))
-    )
-    ax.yaxis.set_minor_locator(
-        SymmetricalLogLocator(base=10, linthresh=linthresh, subs=np.arange(2, 10) * 0.1)
-    )
-    # label only even decades (your function already supports negatives)
-    ax.yaxis.set_major_formatter(FuncFormatter(even_decade_only))
-
-    ax.tick_params(axis="y", which="major", length=6, width=1)
-    ax.tick_params(axis="y", which="minor", length=3, width=0.8)
+    #_apply_y_scale(ax, y_scales["sigma"], linthresh=linthresh)
 
     ax = plt.gca()
     ax.margins(y=0.05)  # 5% headroom
